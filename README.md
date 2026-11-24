@@ -31,15 +31,6 @@
 2. Use the browser menu and choose **Install app** / **Add to Home Screen**.
 3. StudyFlow opens in its own window and is available offline.
 
-### Run locally
-
-The app has no build step. Because the service worker and `fetch` need HTTP, serve the folder instead of opening `index.html` directly:
-
-```bash
-python -m http.server 8000
-# then open http://localhost:8000/
-```
-
 ### Project structure
 
 ```
@@ -57,13 +48,6 @@ icons/                  SVG source, Pillow generator and PNG icons
 ### Language notes
 
 Your interface language is detected from the browser on the first visit and then saved in `localStorage`. Content you create (subject names, notes, exam titles) is your own data and is never rewritten when you switch languages. The initial demo content carries an internal i18n key, so subjects, tasks, exams and grades keep translating while you use the demo; as soon as you edit one of them, it becomes your own text and stays fixed.
-
-### Regenerating icons
-
-```bash
-pip install Pillow
-python icons/make_icons.py
-```
 
 ### License
 
@@ -98,15 +82,6 @@ Copyright (c) 2026 Wolver-Fik. Licensed under the [PolyForm Noncommercial Licens
 2. En el menú del navegador elegí **Instalar aplicación** / **Agregar a la pantalla de inicio**.
 3. StudyFlow se abre en su propia ventana y funciona sin conexión.
 
-### Ejecutar en local
-
-La app no requiere compilación. El service worker necesita HTTP, por lo que conviene servir la carpeta en lugar de abrir `index.html` directamente:
-
-```bash
-python -m http.server 8000
-# luego abrir http://localhost:8000/
-```
-
 ### Estructura del proyecto
 
 ```
@@ -124,13 +99,6 @@ icons/                  SVG fuente, generador con Pillow e iconos PNG
 ### Notas sobre idiomas
 
 El idioma de la interfaz se detecta del navegador en la primera visita y se guarda en `localStorage`. El contenido que creás (nombres de materias, notas, títulos de exámenes) es tuyo y nunca se reescribe al cambiar de idioma. El contenido de demostración inicial lleva una clave i18n interna: materias, tareas, exámenes y notas siguen traduciéndose mientras uses el demo; en cuanto editás uno de esos textos, pasa a ser tuyo y queda fijo.
-
-### Regenerar los iconos
-
-```bash
-pip install Pillow
-python icons/make_icons.py
-```
 
 ### Licencia
 
