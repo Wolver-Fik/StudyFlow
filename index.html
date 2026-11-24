@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0D0D0D">
+  <meta name="description" content="StudyFlow — planificá tu estudio, registrá tu tiempo y seguí tus notas.">
+  <meta name="claude:viewport-fit-sides" content="cover">
+  <title>StudyFlow</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/styles.css">
+  <link rel="apple-touch-icon" href="./icons/icon-180.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png">
+  <link rel="manifest" href="./manifest.webmanifest">
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar" id="topbar">
+      <div class="topbar-row">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 32 32" width="32" height="32" fill="none">
+              <path d="M4 7.5C4 6.119 5.119 5 6.5 5H14c1.105 0 2 .895 2 2v18c0-1.105-.895-2-2-2H6.5A2.5 2.5 0 0 1 4 20.5v-13Z" stroke="#E0A96D" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M28 7.5C28 6.119 26.881 5 25.5 5H18c-1.105 0-2 .895-2 2v18c0-1.105.895-2 2-2h7.5a2.5 2.5 0 0 0 2.5-2.5v-13Z" stroke="#E0A96D" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M16 9v10" stroke="#E0A96D" stroke-width="1.5" stroke-linecap="round" opacity=".55"/>
+              <path d="M8 10.5h5M8 14h4" stroke="#E0A96D" stroke-width="1.4" stroke-linecap="round" opacity=".45"/>
+              <path d="M19 10.5h5M19 14h4" stroke="#E0A96D" stroke-width="1.4" stroke-linecap="round" opacity=".45"/>
+            </svg>
+          </span>
+          <div>
+            <h1 class="brand-title">StudyFlow</h1>
+            <p class="date-line" id="dateLine"></p>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <label class="lang-wrap">
+            <span class="sr-only" data-i18n="header.language">Idioma</span>
+            <select id="langSel" class="lang-select" data-i18n-aria="header.language" aria-label="Idioma">
+              <option value="en">EN</option>
+              <option value="es">ES</option>
+              <option value="pt">PT</option>
+              <option value="fr">FR</option>
+              <option value="it">IT</option>
+              <option value="de">DE</option>
+              <option value="ru">RU</option>
+              <option value="ja">JA</option>
+            </select>
+          </label>
+        </div>
+      </div>
+      <nav class="tabs" role="tablist" data-i18n-aria="header.tabsAria" aria-label="Secciones principales" id="tabs"></nav>
+    </header>
+
+    <div id="notice" class="notice-wrap"></div>
+    <main id="view" class="view" aria-live="off"></main>
+  </div>
+
+  <aside id="tw" class="tw" data-i18n-aria="header.timerAria" aria-label="Temporizador de estudio"></aside>
+  <div id="modalRoot"></div>
+
+  <script src="js/i18n.js"></script>
+  <script src="js/i18n/en.js"></script>
+  <script src="js/i18n/es.js"></script>
+  <script src="js/i18n/pt.js"></script>
+  <script src="js/i18n/fr.js"></script>
+  <script src="js/i18n/it.js"></script>
+  <script src="js/i18n/de.js"></script>
+  <script src="js/i18n/ru.js"></script>
+  <script src="js/i18n/ja.js"></script>
+  <script src="js/storage.js"></script>
+  <script src="js/curricula.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

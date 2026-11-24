@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="StudyFlow">
+  <title>StudyFlow</title>
+  <rect width="512" height="512" fill="#0D0D0D"/>
+  <g fill="none" stroke="#E0A96D" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M64 119.8C64 97.1 81.9 79 104 79H224c17.3 0 32 14.3 32 32v288c0-19.4-14.3-32-32-32H104c-22.1 0-40-17.9-40-40V119.8Z" stroke-width="21"/>
+    <path d="M448 119.8C448 97.1 430.1 79 408 79H288c-17.3 0-32 14.3-32 32v288c0-19.4 14.3-32 32-32h120c22.1 0 40-17.9 40-40V119.8Z" stroke-width="21"/>
+    <path d="M256 145v157" stroke-width="18" opacity=".68"/>
+    <path d="M126 169h78M126 226h62" stroke-width="17" opacity=".52"/>
+    <path d="M308 169h78M308 226h62" stroke-width="17" opacity=".52"/>
+  </g>
+</svg>
