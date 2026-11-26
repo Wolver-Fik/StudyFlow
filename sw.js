@@ -4,7 +4,10 @@
 (function () {
   'use strict';
 
-  var VERSION = 'studyflow-v1.1.2';
+  /* Etapa 1: sube la version con cada cambio. activate solo purga CacheStorage;
+     nunca borra IndexedDB (studyflow_db) ni localStorage. */
+  var VERSION = 'studyflow-v1.2.0';
+  var CACHE = VERSION;
   var SCOPE = self.registration.scope;
   function abs(p) { return new URL(p, SCOPE).href; }
   var INDEX = abs('./index.html');
@@ -30,7 +33,7 @@
     ev.waitUntil(
       caches.keys().then(function (keys) {
         /* Elimina studyflow-v1 y cualquier otra caché obsoleta. */
-        return Promise.all(keys.filter(function (k) { return k !== VERSION; }).map(function (k) { return caches.delete(k); }));
+        return Promise.all(keys.filter(function (k) { return k.indexOf('studyflow-') === 0 && k !== VERSION; }).map(function (k) { return caches.delete(k); }));
       }).then(function () { return self.clients.claim(); })
     );
   });
@@ -85,7 +88,7 @@
     }
     if (data && data.type === 'CLEAR_CACHES') {
       ev.waitUntil(caches.keys().then(function (keys) {
-        return Promise.all(keys.filter(function (k) { return k !== VERSION; }).map(function (k) { return caches.delete(k); }));
+        return Promise.all(keys.filter(function (k) { return k.indexOf('studyflow-') === 0 && k !== VERSION; }).map(function (k) { return caches.delete(k); }));
       }));
     }
   });

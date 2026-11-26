@@ -1335,13 +1335,23 @@
           if (!txt) return { error: L('backup.empty') };
           let o;
           try { o = JSON.parse(txt); } catch (e) { return { error: L('backup.invalid') }; }
-          if (!o || !Array.isArray(o.subjects)) return { error: L('backup.format') };
-          resetTimer();
-          S = SFS.migrate(o);
-          S.timer.status = 'idle'; S.timer.startedAt = null; S.timer.acc = 0; S.timer.logged = 0;
-          closeTimerPanel();
-          afterChange();
-          toast(L('settings.importDone'));
+          /* Respaldo temporal en memoria: si la validacion falla, no se toca nada. */
+          const safety = S ? JSON.stringify(S) : null;
+          let check;
+          try { check = SFS.validateBackup ? SFS.validateBackup(o) : { ok: true, data: o }; }
+          catch (e) { return { error: e && e.message ? e.message : L('backup.format') }; }
+          if (!check.ok) return { error: check.msgText || L('backup.format') };
+          try {
+            resetTimer();
+            S = SFS.migrate(check.data);
+            S.timer.status = 'idle'; S.timer.startedAt = null; S.timer.acc = 0; S.timer.logged = 0;
+            closeTimerPanel();
+            afterChange();
+            toast(L('settings.importDone'));
+          } catch (e) {
+            if (safety) { S = JSON.parse(safety); save(S); renderAll(); }
+            return { error: 'No se pudo importar el respaldo; tus datos siguen intactos.' };
+          }
         }
       });
     const file = $('#imFile');
@@ -1836,7 +1846,7 @@
     renderAll();
   });
 
-  const SW_VERSION = 'studyflow-v1.1.2';
+  const SW_VERSION = 'studyflow-v1.2.0';
   let reloading = false;
 
   /* Pregunta al worker activo su versión. Un worker anterior no entiende el
@@ -1905,9 +1915,12 @@
       if (!I || !SFS) throw new Error('Faltan módulos StudyI18n o SFStore: revisá las rutas de js/i18n.js y js/storage.js.');
       I.init();
       S = load();
-      if (!S) { S = sampleState(); save(S); }
+      /* No se persiste el demo hasta confirmar que IndexedDB no tiene datos
+         reales: hacerlo ahora taparia la migracion asincrona. */
+      const freshBoot = !S;
+      if (!S) S = sampleState();
       /* Estado guardado en otro idioma: lo sincroniza con el selector actual. */
-      if (SFS.localizeSample && SFS.localizeSample(S)) save(S);
+      if (!freshBoot && SFS.localizeSample && SFS.localizeSample(S)) save(S);
       ensureTimerSubject();
       const t = T();
       if (t.status !== 'idle') {
@@ -1924,6 +1937,21 @@
       initDrag();
       renderAll();
       revealTimer();
+      /* La migracion a IndexedDB es asincrona: solo se refleja si cambio
+         el estado persistido, sin pisar lo que el usuario ya ve en pantalla. */
+      if (SFS.whenReady) SFS.whenReady().then(function () {
+        const fresh = load();
+        if (!fresh) {
+          if (freshBoot) {
+            if (SFS.localizeSample && SFS.localizeSample(S)) save(S);
+            else save(S);
+          }
+          return;
+        }
+        if (JSON.stringify(fresh) === JSON.stringify(S)) return;
+        S = fresh;
+        renderAll();
+      }).catch(function () {});
       if (T().status === 'running') wake(true);
       setInterval(tick, 1000);
     } catch (e) {

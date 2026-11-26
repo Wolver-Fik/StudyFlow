@@ -146,6 +146,112 @@
 
   const KEY = 'studyflow-v1';
   const LEGACY_KEY = 'panel-estudio-v1';
+
+  /* ---------- Capa IndexedDB (Etapa 1) ----------
+     IndexedDB es el almacen principal; localStorage sigue siendo el espejo
+     sincrono que consume app.js. El store 'files' guarda adjuntos/imagenes
+     grandes sin el limite de 5 MB. La API sincrona no cambia. */
+  const DB_NAME = 'studyflow_db';
+  const DB_VERSION = 1;
+  const SCHEMA_VERSION = 4;
+  const STORE_STATE = 'state';
+  const STORE_FILES = 'files';
+  const STATE_KEY = 'main';
+  const MIRROR_KEYS = [KEY, LEGACY_KEY, 'studyflow-lang'];
+  let dbPromise = null, idbReady = false, idbFailed = false;
+  let initPromise = null, writeChain = Promise.resolve(), memoryBackup = null;
+
+  function idbOpen() {
+    if (dbPromise) return dbPromise;
+    dbPromise = new Promise(function (resolve, reject) {
+      if (!('indexedDB' in window)) { reject(new Error('IndexedDB no disponible')); return; }
+      const req = indexedDB.open(DB_NAME, DB_VERSION);
+      req.onupgradeneeded = function () {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(STORE_STATE)) db.createObjectStore(STORE_STATE);
+        if (!db.objectStoreNames.contains(STORE_FILES)) db.createObjectStore(STORE_FILES, { keyPath: 'id' });
+      };
+      req.onsuccess = function () { idbReady = true; resolve(req.result); };
+      req.onerror = function () { idbFailed = true; reject(req.error || new Error('No se pudo abrir IndexedDB')); };
+      req.onblocked = function () { idbFailed = true; reject(new Error('IndexedDB bloqueada')); };
+    });
+    return dbPromise;
+  }
+  function idbRequest(db, store, mode, run) {
+    return new Promise(function (resolve, reject) {
+      const tx = db.transaction(store, mode), os = tx.objectStore(store);
+      let result;
+      try { result = run(os); } catch (e) { reject(e); return; }
+      tx.oncomplete = function () { resolve(result && result.result !== undefined ? result.result : undefined); };
+      tx.onerror = function () { reject(tx.error || new Error('Error de IndexedDB')); };
+      tx.onabort = function () { reject(tx.error || new Error('Transaccion abortada')); };
+    });
+  }
+  function idbGet(store, key) {
+    return idbOpen().then(function (db) { return idbRequest(db, store, 'readonly', function (os) { return os.get(key); }); });
+  }
+  function idbGetAll(store) {
+    return idbOpen().then(function (db) { return idbRequest(db, store, 'readonly', function (os) { return os.getAll(); }); });
+  }
+  function idbPut(store, key, value) {
+    return idbOpen().then(function (db) {
+      return idbRequest(db, store, 'readwrite', function (os) { return key === undefined ? os.put(value) : os.put(value, key); });
+    });
+  }
+  function idbDelete(store, key) {
+    return idbOpen().then(function (db) { return idbRequest(db, store, 'readwrite', function (os) { return os.delete(key); }); });
+  }
+  function localSnapshot() {
+    const snap = {};
+    try { MIRROR_KEYS.forEach(function (k) { const v = localStorage.getItem(k); if (v !== null) snap[k] = v; }); } catch (e) {}
+    return snap;
+  }
+  function restoreSnapshot(snap) {
+    try {
+      MIRROR_KEYS.forEach(function (k) {
+        if (Object.prototype.hasOwnProperty.call(snap, k)) localStorage.setItem(k, snap[k]);
+        else localStorage.removeItem(k);
+      });
+    } catch (e) {}
+  }
+  function writeIDB(data) {
+    writeChain = writeChain.then(function () {
+      return idbPut(STORE_STATE, STATE_KEY, {
+        schemaVersion: SCHEMA_VERSION, app: 'studyflow', data: data,
+        localStorage: localSnapshot(), updatedAt: new Date().toISOString()
+      });
+    }).catch(function () { idbFailed = true; });
+    return writeChain;
+  }
+  function initIDB() {
+    if (initPromise) return initPromise;
+    initPromise = idbOpen().then(function () { return idbGet(STORE_STATE, STATE_KEY); })
+      .then(function (rec) {
+        const local = localSnapshot();
+        const rawLocal = local[KEY] || local[LEGACY_KEY];
+        /* Sin estado local tampoco hay nada que migrar: no escribir un
+           envelope con data:null que luego se confundiria con un backup. */
+        if (!rec) { if (rawLocal) writeIDB(JSON.parse(rawLocal)); return; }
+        const remote = (rec.schemaVersion && rec.data) ? rec.data : rec;
+        if (!rawLocal) {
+          try { localStorage.setItem(KEY, JSON.stringify(remote)); } catch (e) {}
+          writeIDB(remote);
+        } else writeIDB(migrate(JSON.parse(rawLocal)));
+      }).catch(function () { idbFailed = true; });
+    return initPromise;
+  }
+  function whenReady() { return initIDB(); }
+  function putFile(id, data, meta) {
+    const rec = {
+      id: String(id), data: data, type: (meta && meta.type) || '', name: (meta && meta.name) || '',
+      size: typeof data === 'string' ? data.length : ((data && data.size) || 0),
+      schemaVersion: SCHEMA_VERSION, createdAt: new Date().toISOString()
+    };
+    return idbPut(STORE_FILES, undefined, rec);
+  }
+  function getFile(id) { return idbGet(STORE_FILES, String(id)); }
+  function listFiles() { return idbGetAll(STORE_FILES); }
+  function deleteFile(id) { return idbDelete(STORE_FILES, String(id)); }
   const DAYS = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
   const DAYS_LONG = ['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo'];
   const MONTHS = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
@@ -253,6 +359,9 @@
     demoCardsInjected = false;
     const d = defaults();
     const s = Object.assign({}, d, o);
+    /* El schema versionado lo controla esta app, no el archivo importado. */
+    s.v = d.v;
+    s.schemaVersion = SCHEMA_VERSION;
     s.settings = Object.assign({}, d.settings, o.settings || {});
     // Migrate legacy scale fields
     if (o.settings && (o.settings.scaleMax != null || o.settings.pass != null) && !o.settings.scale) {
@@ -391,12 +500,16 @@
   }
 
   function load() {
+    /* Migracion automatica localStorage -> IndexedDB, sin perder registros. */
+    initIDB();
     if (!storageOk) return null;
     try {
       let raw = localStorage.getItem(KEY);
       if (!raw) raw = localStorage.getItem(LEGACY_KEY);
       if (!raw) return null;
-      const state = migrate(JSON.parse(raw));
+      let parsed = JSON.parse(raw);
+      if (parsed && parsed.app === 'studyflow' && parsed.data) parsed = parsed.data;
+      const state = migrate(parsed);
       /* Persiste apenas se inyectan las tarjetas demo: así mantienen sus ids
          e historial y no se regeneran en cada arranque. */
       if (demoCardsInjected) save(state);
@@ -406,7 +519,12 @@
 
   function save(state) {
     if (!storageOk) return false;
-    try { localStorage.setItem(KEY, JSON.stringify(state)); return true; } catch (e) { storageOk = false; return false; }
+    state.schemaVersion = SCHEMA_VERSION;
+    let ok;
+    try { localStorage.setItem(KEY, JSON.stringify(state)); ok = true; }
+    catch (e) { storageOk = false; ok = false; }
+    writeIDB(state);
+    return ok;
   }
 
   /* Seis tarjetas traducibles vinculadas a las materias de ejemplo. Se usan
@@ -625,7 +743,39 @@
   function formatScalePass(scale) { return scale.type === 'letter' ? (scale.letters[scale.pass] || 'C') : num(scale.pass); }
 
   function exportJSON(state) {
-    return JSON.stringify(state, null, 2);
+    return JSON.stringify({
+      app: 'StudyFlow',
+      schemaVersion: SCHEMA_VERSION,
+      exportedAt: new Date().toISOString(),
+      data: state
+    }, null, 2);
+  }
+
+  /* Valida origen/estructura antes de reemplazar el estado actual. */
+  function validateBackup(o) {
+    if (!o || typeof o !== 'object' || Array.isArray(o)) {
+      return { ok: false, msgText: 'El archivo no contiene un respaldo válido.' };
+    }
+    if (o.app && String(o.app).toLowerCase() !== 'studyflow') {
+      return { ok: false, msgText: 'Este respaldo pertenece a otra aplicación y no se importará.' };
+    }
+    const sv = o.schemaVersion == null ? 1 : Number(o.schemaVersion);
+    if (!isFinite(sv) || sv < 1 || sv > SCHEMA_VERSION) {
+      return { ok: false, msgText: 'La versión de esquema del respaldo no es compatible.' };
+    }
+    const data = (o.data && typeof o.data === 'object') ? o.data : o;
+    if (!Array.isArray(data.subjects)) {
+      return { ok: false, msgText: 'El respaldo está incompleto: no contiene materias válidas.' };
+    }
+    let bad = false;
+    ['units', 'blocks', 'exams', 'grades', 'flashcards'].forEach(function (k) {
+      if (data[k] !== undefined && !Array.isArray(data[k])) bad = true;
+    });
+    if (bad) return { ok: false, msgText: 'El respaldo está dañado: algunas secciones no son válidas.' };
+    if (data.log !== undefined && (typeof data.log !== 'object' || Array.isArray(data.log))) {
+      return { ok: false, msgText: 'El respaldo está dañado: el registro de horas no es válido.' };
+    }
+    return { ok: true, data: data, version: sv };
   }
 
   function csvEscape(v) {
@@ -698,6 +848,10 @@
     cardsBy, dueCards, newCard, scheduleCard, cardStats,
     addLog, daySec, totalSec, weekDates, secBy, streak,
     formatGrade, formatScaleMax, formatScalePass,
-    exportJSON, exportCSV, downloadFile
+    exportJSON, exportCSV, downloadFile, validateBackup,
+    /* Etapa 1: almacenamiento durable y sin limite de 5 MB */
+    DB_NAME, SCHEMA_VERSION, whenReady,
+    isIndexedDBReady: () => idbReady && !idbFailed,
+    putFile, getFile, listFiles, deleteFile
   };
 })();
