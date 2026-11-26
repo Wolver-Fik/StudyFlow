@@ -8,10 +8,12 @@
   const C = (base, n, vars) => I.count(base, n, vars);
   const {
     COLORS, SCALE_PRESETS,
-    $, esc, uid, pad, ymd, parseYmd, todayKey, addDays, dayIdx, clamp, fnum, num,
+    $, $$, esc, uid, pad, ymd, parseYmd, todayKey, addDays, dayIdx, clamp, fnum, num,
     toMin, normTime, fmtMin, blockMin, fmtClock,
     defaults, normalizeScale, load, save, sampleState,
-    sub, unitsBy, unitStats, syncProgress, addLog, daySec, totalSec, weekDates, secBy, streak,
+    sub, unitsBy, unitStats, syncProgress,
+    cardsBy, dueCards, newCard, scheduleCard, cardStats,
+    addLog, daySec, totalSec, weekDates, secBy, streak,
     formatGrade, formatScaleMax, formatScalePass, exportJSON, exportCSV, downloadFile
   } = SFS;
 
@@ -62,6 +64,17 @@
     monLong: () => I.t('months.long')
   };
 
+  /* El panel es arrastrable en escritorio, pero en móvil debe quedar anclado
+     al viewport: una posición guardada en otro dispositivo puede dejarlo
+     fuera de pantalla. 768px cubre el iPhone 14 (390px) y tabletas estrechas. */
+  const COMPACT_MQ = '(max-width: 768px)';
+  function isCompact() {
+    return !!(window.matchMedia && window.matchMedia(COMPACT_MQ).matches);
+  }
+  function reduceMotion() {
+    return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  }
+
   let S = null;
   let modal = null;
   let sliding = false;
@@ -71,6 +84,12 @@
   let unitDraft = null;
   let unitSubjectId = null;
   const closedG = new Set();
+
+  /* Sesión de repaso: sólo vive en memoria, así que no ensucia el respaldo. */
+  let cardQueue = [];
+  let cardIndex = 0;
+  let cardFlipped = false;
+  const cardGrades = [];
 
   const svgIcon = (d, stroke) => '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" ' + (stroke ? 'fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"' : 'fill="currentColor"') + '>' + d + '</svg>';
   const ic = {
@@ -217,7 +236,7 @@
     wake(false); beep();
   }
 
-  function startT() { const t = T(); t.status = 'running'; t.startedAt = Date.now(); t.seen = t.startedAt; twNote = ''; wake(true); save(S); renderWidget(); tick(); }
+  function startT() { const t = T(); t.status = 'running'; t.startedAt = Date.now(); t.seen = t.startedAt; twNote = ''; wake(true); save(S); renderWidget(); revealTimer(); tick(); }
   function pauseT() { const t = T(); commit(); t.acc = elapsedMs(t); t.startedAt = null; t.status = 'paused'; wake(false); save(S); renderWidget(); refreshLive(); }
   function toggleT() { unlockAudio(); const t = T(); if (!t.sid) { subjectModal(); return; } if (t.status === 'running') pauseT(); else startT(); }
   function closeTimerPanel() {
@@ -281,22 +300,55 @@
     document.title = t.status === 'running' ? c + ' · StudyFlow' : 'StudyFlow';
   }
 
+  function setTimerBodyClasses(open, mini) {
+    document.body.classList.toggle('timer-open', !!open);
+    document.body.classList.toggle('timer-mini', !!open && !!mini);
+  }
+
   function applyPos() {
-    const tw = twEl(), pos = S.ui.pos;
+    const tw = twEl();
+    if (!tw) return;
+    /* En móvil se descarta cualquier posición arrastrada previamente: el CSS
+       fija top:auto/bottom con !important y el inline style sólo estorbaría. */
+    if (isCompact()) {
+      if (S.ui.pos) S.ui.pos = null;
+      tw.style.left = ''; tw.style.top = ''; tw.style.right = ''; tw.style.bottom = '';
+      return;
+    }
+    const pos = S.ui.pos;
     if (!pos) { tw.style.left = ''; tw.style.top = ''; tw.style.right = ''; tw.style.bottom = ''; return; }
     const x = clamp(pos.x, 8, Math.max(8, window.innerWidth - tw.offsetWidth - 8));
     const y = clamp(pos.y, 8, Math.max(8, window.innerHeight - tw.offsetHeight - 8));
     tw.style.left = x + 'px'; tw.style.top = y + 'px'; tw.style.right = 'auto'; tw.style.bottom = 'auto';
   }
 
+  /* Garantiza que el panel esté dentro del viewport tras iniciar una sesión. */
+  function revealTimer() {
+    const tw = twEl();
+    if (!tw || tw.hidden) return;
+    if (isCompact() && S.ui.pos) { S.ui.pos = null; applyPos(); }
+    const r = tw.getBoundingClientRect();
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const visible = r.width > 0 && r.height > 0 &&
+      r.left >= -1 && r.top >= -1 && r.right <= vw + 1 && r.bottom <= vh + 1;
+    if (visible) return;
+    try {
+      tw.scrollIntoView({ behavior: reduceMotion() ? 'auto' : 'smooth', block: 'nearest', inline: 'nearest' });
+    } catch (e) {
+      try { tw.scrollIntoView(); } catch (x) {}
+    }
+  }
+
   function renderWidget() {
     const tw = twEl(); const t = T(); const s = sub(S, t.sid);
     if (!S.ui.timerOpen) {
       tw.hidden = true; tw.innerHTML = '';
+      setTimerBodyClasses(false, false);
       document.title = 'StudyFlow';
       return;
     }
     tw.hidden = false;
+    setTimerBodyClasses(true, S.ui.min);
     const color = s ? s.color : 'var(--accent)';
     const running = t.status === 'running';
     tw.className = 'tw' + (S.ui.min ? ' mini' : '');
@@ -308,8 +360,8 @@
       tw.innerHTML = '<div class="tw-mini">' +
         '<span class="dot" style="background:' + esc(color) + '"></span>' +
         '<span class="tw-mini-time" id="tMiniClock" title="' + esc(s ? s.name : L('timer.title')) + '">' + clockText() + '</span>' +
-        '<button class="icon-btn round" data-act="twToggle" aria-label="' + esc(mainLabel) + '">' + mainIcon + '</button>' +
-        '<button class="icon-btn" data-act="twMin" aria-label="' + esc(L('timer.expand')) + '">' + ic.expand + '</button></div>';
+        '<button type="button" class="icon-btn round" data-act="twToggle" aria-label="' + esc(mainLabel) + '">' + mainIcon + '</button>' +
+        '<button type="button" class="icon-btn" data-act="twMin" aria-label="' + esc(L('timer.expand')) + '">' + ic.expand + '</button></div>';
     } else {
       const active = s
         ? '<div class="tw-active"><span class="tw-active-kicker">' + esc(L('timer.subjectAria')) + '</span>' +
@@ -326,23 +378,23 @@
           ).join('') + '</div></div>' : '';
       const pomoLabel = esc(L('timer.pomodoro') + ' · ' + S.settings.pomo.work + ' ' + L('unit.minute'));
       tw.innerHTML = '<div class="tw-head" data-drag><span class="tw-title">' + esc(L('timer.title')) + '</span><div class="tw-head-actions">' +
-        '<button class="icon-btn" data-act="twCfg" aria-label="' + esc(L('timer.settingsAria')) + '">' + ic.sliders + '</button>' +
-        (t.mode === 'pomo' ? '<button class="icon-btn" data-act="twSkip" aria-label="' + esc(L('timer.skip')) + '">' + ic.skip + '</button>' : '') +
-        '<button class="icon-btn" data-act="twMin" aria-label="' + esc(L('timer.minimize')) + '">' + ic.min + '</button>' +
+        '<button type="button" class="icon-btn" data-act="twCfg" aria-label="' + esc(L('timer.settingsAria')) + '">' + ic.sliders + '</button>' +
+        (t.mode === 'pomo' ? '<button type="button" class="icon-btn" data-act="twSkip" aria-label="' + esc(L('timer.skip')) + '">' + ic.skip + '</button>' : '') +
+        '<button type="button" class="icon-btn" data-act="twMin" aria-label="' + esc(L('timer.minimize')) + '">' + ic.min + '</button>' +
         '</div></div>' +
         '<div class="tw-body">' +
-        '<div class="tw-mode"><button data-act="twMode" data-mode="pomo" class="' + (t.mode === 'pomo' ? 'on' : '') + '">' + pomoLabel + '</button>' +
-        '<button data-act="twMode" data-mode="free" class="' + (t.mode === 'free' ? 'on' : '') + '">' + esc(L('timer.freeMode')) + '</button></div>' +
+        '<div class="tw-mode"><button type="button" data-act="twMode" data-mode="pomo" class="' + (t.mode === 'pomo' ? 'on' : '') + '">' + pomoLabel + '</button>' +
+        '<button type="button" data-act="twMode" data-mode="free" class="' + (t.mode === 'free' ? 'on' : '') + '">' + esc(L('timer.freeMode')) + '</button></div>' +
         active +
         '<div class="tw-phase" id="tPhase">' + esc(phaseText()) + '</div>' +
         '<div class="tw-time" id="tClock" aria-live="off">' + clockText() + '</div>' +
         (t.mode === 'pomo' ? '<div class="tw-track"><i id="tTrack" style="width:0"></i></div>' : '') +
         sel +
         '<div class="tw-controls">' +
-        '<button class="btn pri tw-toggle" data-act="twToggle"' + (S.subjects.length ? '' : ' disabled') + '>' + mainIcon + '<span>' + esc(mainLabel) + '</span></button>' +
-        '<button class="btn" data-act="twReset" aria-label="' + esc(L('timer.restart')) + '">' + ic.reset + '<span>' + esc(L('timer.restart')) + '</span></button>' +
-        '<button class="btn tw-save" data-act="twEnd" aria-label="' + esc(L('timer.saveFinish')) + '">' + ic.save + '<span>' + esc(L('timer.saveFinish')) + '</span></button>' +
-        '<button class="btn ghost tw-discard" data-act="twDiscard" aria-label="' + esc(L('timer.discard')) + '">' + ic.x + '<span>' + esc(L('timer.discard')) + '</span></button>' +
+        '<button type="button" class="btn pri tw-toggle" data-act="twToggle"' + (S.subjects.length ? '' : ' disabled') + '>' + mainIcon + '<span>' + esc(mainLabel) + '</span></button>' +
+        '<button type="button" class="btn" data-act="twReset" aria-label="' + esc(L('timer.restart')) + '">' + ic.reset + '<span>' + esc(L('timer.restart')) + '</span></button>' +
+        '<button type="button" class="btn tw-save" data-act="twEnd" aria-label="' + esc(L('timer.saveFinish')) + '">' + ic.save + '<span>' + esc(L('timer.saveFinish')) + '</span></button>' +
+        '<button type="button" class="btn ghost tw-discard" data-act="twDiscard" aria-label="' + esc(L('timer.discard')) + '">' + ic.x + '<span>' + esc(L('timer.discard')) + '</span></button>' +
         '</div>' +
         '<div class="tw-note" id="tToday"></div>' +
         '<div class="tw-note">' + esc(twNote) + '</div>' +
@@ -354,6 +406,7 @@
   function initDrag() {
     const tw = twEl();
     tw.addEventListener('pointerdown', (e) => {
+      if (isCompact()) return;
       if (!e.target.closest('[data-drag]') || e.target.closest('button,select,input,a')) return;
       const r = tw.getBoundingClientRect();
       drag = { dx: e.clientX - r.left, dy: e.clientY - r.top, id: e.pointerId };
@@ -377,7 +430,7 @@
   function renderTabs() {
     const tabs = [
       ['estudio', 'tabs.study'], ['agenda', 'tabs.agenda'],
-      ['notas', 'tabs.notes'], ['configuracion', 'tabs.settings']
+      ['notas', 'tabs.notes'], ['flashcards', 'tabs.cards'], ['configuracion', 'tabs.settings']
     ];
     $('#tabs').innerHTML = tabs.map(t => '<button class="tab" role="tab" data-act="tab" data-tab="' + t[0] + '" aria-selected="' + (S.ui.tab === t[0]) + '" aria-controls="view">' + L(t[1]) + '</button>').join('');
     const d = new Date();
@@ -415,7 +468,7 @@
     const v = $('#view');
     const panes = [
       ['estudio', viewEstudio], ['agenda', viewAgenda],
-      ['notas', viewNotas], ['configuracion', viewConfiguracion]
+      ['notas', viewNotas], ['flashcards', viewFlashcards], ['configuracion', viewConfiguracion]
     ];
     /* [hidden] + display:none !important garantiza un cambio limpio de pestaña. */
     v.innerHTML = panes.map(p =>
@@ -478,6 +531,103 @@
     }
     return best;
   }
+  /* ---- Recuperación de bloques perdidos ----
+     Los bloques son plantillas semanales: un "bloque perdido" es una franja de
+     estudio de un día anterior sin tiempo registrado para esa materia. */
+  function missedStudyBlocks() {
+    const now = new Date();
+    const seen = Array.isArray(S.ui.recoverSeen) ? S.ui.recoverSeen : [];
+    const out = [];
+    for (let back = 1; back <= 3; back++) {
+      const dt = addDays(now, -back);
+      const k = ymd(dt), di = dayIdx(dt);
+      S.blocks.filter(b => b.type === 'estudio' && b.day === di).forEach(b => {
+        if (out.some(x => x.b.id === b.id)) return;
+        const key = k + '|' + b.id;
+        if (seen.indexOf(key) >= 0) return;
+        const logged = b.sid ? ((S.log[k] && S.log[k][b.sid]) || 0) : 0;
+        const need = blockMin(b) * 60;
+        if (logged >= need * 0.5) return;
+        out.push({ b, key, date: k, day: D.short()[di], missing: Math.max(0, need - logged) });
+      });
+    }
+    return out;
+  }
+
+  function suggestSlot(b) {
+    const now = new Date();
+    const nowMin = now.getHours() * 60 + now.getMinutes();
+    const dur = Math.max(30, blockMin(b));
+    for (let off = 0; off < 7; off++) {
+      const di = (dayIdx(now) + off) % 7;
+      const dayBlocks = S.blocks.filter(x => x.day === di);
+      for (let st = 8 * 60; st <= 21 * 60; st += 30) {
+        if (off === 0 && st <= nowMin + 15) continue;
+        const en = st + dur;
+        if (en > 22 * 60) continue;
+        if (dayBlocks.some(x => toMin(x.start) < en && toMin(x.end) > st)) continue;
+        const dt = addDays(now, off);
+        return {
+          day: di, date: ymd(dt), off,
+          start: pad(Math.floor(st / 60)) + ':' + pad(st % 60),
+          end: pad(Math.floor(en / 60)) + ':' + pad(en % 60)
+        };
+      }
+    }
+    return null;
+  }
+
+  function recoveryNoticeHTML() {
+    const missed = missedStudyBlocks();
+    if (!missed.length) return '';
+    const b = missed[0].b;
+    const slot = suggestSlot(b);
+    const sb = sub(S, b.sid);
+    const when = slot
+      ? (slot.off === 0 ? L('hero.today') : slot.off === 1 ? L('hero.tomorrow') : D.long()[slot.day]) + ', ' + slot.start
+      : L('recovery.noSlot');
+    const text = C('recovery.text', missed.length, {
+      day: slot ? D.long()[slot.day] : '—', time: slot ? slot.start : '—'
+    });
+    const detail = L('recovery.detail', {
+      subject: sb ? sb.name : (b.note || L('agenda.noSubject')),
+      duration: fmtMin(blockMin(b))
+    });
+    let actions = '<button class="btn sm" data-act="tab" data-tab="agenda">' + L('action.viewAgenda') + '</button>';
+    if (slot) actions += '<button class="btn sm pri" data-act="recoverBlock" data-id="' + b.id + '">' + L('recovery.suggest') + '</button>';
+    actions += '<button class="btn sm ghost" data-act="dismissRecovery" data-key="' + esc(missed[0].key) + '">' + L('action.close') + '</button>';
+    return '<div class="notice warn recovery-notice"><div class="recovery-copy">' +
+      '<p><strong>' + L('recovery.title') + '</strong></p><p>' + text + '</p>' +
+      '<p class="muted">' + esc(detail) + (slot ? ' · ' + esc(when) : '') + '</p></div>' +
+      '<div class="notice-actions">' + actions + '</div></div>';
+  }
+
+  /* ---- Indicador de preparación de exámenes ----
+     Combina temario, tiempo semanal, dominio de flashcards y días restantes.
+     Es orientativo: no promete una nota, sólo ordena dónde conviene reforzar. */
+  function examPrep(e) {
+    const s = sub(S, e.sid);
+    const syllabus = s ? clamp(Number(s.progress) || 0, 0, 100) : 0;
+    const goal = goalMinOf(s) * 60;
+    const studied = s ? secBy(S, s.id, weekDates()) : 0;
+    const hours = goal ? clamp(Math.round(studied / goal * 100), 0, 100) : (studied > 0 ? 100 : 0);
+    const cs = e.sid ? cardStats(S, e.sid) : { pct: null };
+    const cards = cs.pct == null ? syllabus : cs.pct;
+    const days = examState(e).days;
+    const base = 0.4 * syllabus + 0.3 * hours + 0.3 * cards;
+    const pct = clamp(Math.round(base + (days > 14 ? 8 : days < 3 ? -5 : 0)), 0, 100);
+    const level = pct >= 80 ? 'ready' : pct >= 50 ? 'track' : 'low';
+    return {
+      pct: pct, level: level,
+      label: L('exam.prep.' + (level === 'ready' ? 'ready' : level === 'track' ? 'onTrack' : 'reinforce')),
+      detail: L('exam.prep.detail', { a: syllabus, b: hours, c: cs.pct == null ? '—' : cards })
+    };
+  }
+
+  function fmtShortDate(d) {
+    return d.getDate() + ' ' + D.mon()[d.getMonth()];
+  }
+
   // Estudio view
   function viewEstudio() {
     const wk = weekDates(), tk = todayKey();
@@ -508,7 +658,7 @@
         when: when, time: nb.b.start
       });
       heroMeta = '<span class="badge accent">' + when + ' · ' + nb.b.start + '–' + nb.b.end + ' · ' + fmtMin(blockMin(nb.b)) + '</span>' + (sb ? '<span class="badge"><span class="dot" style="background:' + sb.color + '"></span>' + esc(sb.name) + '</span>' : '');
-      heroAction = sb ? '<button class="btn pri" data-act="studySubject" data-id="' + sb.id + '">' + L('action.startSession') + '</button><button class="btn ghost" data-act="tab" data-tab="agenda">' + L('action.viewAgenda') + '</button>' : '<button class="btn pri" data-act="tab" data-tab="agenda">' + L('action.viewAgenda') + '</button>';
+      heroAction = sb ? '<button type="button" class="btn pri" data-act="studySubject" data-id="' + sb.id + '">' + L('action.startSession') + '</button><button class="btn ghost" data-act="tab" data-tab="agenda">' + L('action.viewAgenda') + '</button>' : '<button class="btn pri" data-act="tab" data-tab="agenda">' + L('action.viewAgenda') + '</button>';
       heroColor = sb ? sb.color : 'var(--accent)';
       heroProgress = sb ? (sb.progress || 0) : dayPct;
       heroRingLabel = sb ? L('hero.syllabus') : L('hero.dailyGoal');
@@ -517,7 +667,7 @@
       heroTitle = focus.name;
       heroSub = L('hero.resumeSub');
       heroMeta = '<span class="badge accent">' + L('hero.suggested') + '</span><span class="badge">' + L('hero.syllabusPercent', { n: focus.progress || 0 }) + '</span>';
-      heroAction = '<button class="btn pri" data-act="studySubject" data-id="' + focus.id + '">' + L('action.startSession') + '</button><button class="btn ghost" data-act="manualTime" data-id="' + focus.id + '">' + L('action.logTime') + '</button>';
+      heroAction = '<button type="button" class="btn pri" data-act="studySubject" data-id="' + focus.id + '">' + L('action.startSession') + '</button><button class="btn ghost" data-act="manualTime" data-id="' + focus.id + '">' + L('action.logTime') + '</button>';
       heroColor = focus.color;
       heroProgress = focus.progress || 0;
       heroRingLabel = L('hero.syllabus');
@@ -547,7 +697,8 @@
     '</section>';
 
     // KPIs
-    const examPct = nx ? clamp((1 - (nx.st.days / 30)) * 100, 0, 100) : 0;
+    const nxPrep = nx ? examPrep(nx.e) : null;
+    const examPct = nxPrep ? nxPrep.pct : 0;
     const streakPct = clamp((st / 7) * 100, 0, 100);
     const todayKpiPct = dailyGoal ? clamp((ts / dailyGoal) * 100, 0, 100) : (ts > 0 ? 100 : 0);
     const kpis = '<section class="kpi-grid">' +
@@ -555,9 +706,10 @@
         '<div class="kpi-body"><div class="kpi-title">' + L('kpi.streak') + '</div><div class="kpi-value">' + C('kpi.day', st) + '</div><div class="kpi-sub">' + L(st ? 'kpi.streakOn' : 'kpi.streakStart') + '</div></div></div>' +
       '<div class="panel kpi">' + kpiRing(todayKpiPct, 'var(--sage)', Math.round(todayKpiPct) + '%', L('kpi.today')) +
         '<div class="kpi-body"><div class="kpi-title">' + L('kpi.todayTime') + '</div><div class="kpi-value">' + fmtDur(ts) + '</div><div class="kpi-sub">' + (dailyGoal ? L('kpi.goal', { goal: fmtDur(dailyGoal) }) : L('kpi.noGoal')) + '</div></div></div>' +
-      '<div class="panel kpi">' + kpiRing(nx ? examPct : 0, nx ? (nx.st.days <= 2 ? 'var(--bad)' : nx.st.days <= 7 ? 'var(--warn)' : 'var(--accent)') : '#333', nx ? (nx.st.days === 0 ? L('kpi.todayShort') : nx.st.days + 'd') : '—', L('kpi.exam')) +
-        '<div class="kpi-body"><div class="kpi-title">' + L('kpi.nextExam') + '</div><div class="kpi-value">' + (nx ? (nx.st.days === 0 ? L('kpi.todayShort') : C('exam.days', nx.st.days)) : '—') + '</div><div class="kpi-sub">' + (nx ? esc(nx.e.title) : L('kpi.noDates')) + '</div></div></div>' +
-    '</section>';
+      '<div class="panel kpi">' + kpiRing(examPct, nxPrep ? (nx.st.days <= 2 ? 'var(--bad)' : nx.st.days <= 7 ? 'var(--warn)' : 'var(--accent)') : '#333', nx ? examPct + '%' : '—', nxPrep ? L('exam.prep') : L('kpi.exam')) +
+        '<div class="kpi-body"><div class="kpi-title">' + L('kpi.nextExam') + '</div><div class="kpi-value">' + (nx ? (nx.st.days === 0 ? L('kpi.todayShort') : C('exam.days', nx.st.days)) : '—') + '</div><div class="kpi-sub">' + (nx ? esc(nx.e.title) + (nxPrep ? ' · <span class="tag">' + esc(nxPrep.label) + '</span>' : '') : L('kpi.noDates')) + '</div></div></div>' +
+    '</section>' +
+    recoveryNoticeHTML();
 
     const avgP = S.subjects.length ? Math.round(S.subjects.reduce((a, s) => a + (s.progress || 0), 0) / S.subjects.length) : 0;
     const subjectCards = S.subjects.length
@@ -599,7 +751,7 @@
         '<div class="metric-row" style="margin:0"><span class="metric-label">' + L('subject.total') + '</span><span class="metric-val"><strong>' + fmtDur(totalSec(S, s.id)) + '</strong></span></div>' +
       '</div>' +
       unitLine +
-      '<div class="card-footer"><button class="btn sm" data-act="manualTime" data-id="' + s.id + '">' + L('action.logTime') + '</button><button class="btn sm pri" data-act="studySubject" data-id="' + s.id + '">' + L('action.startSession') + '</button></div>' +
+      '<div class="card-footer"><button class="btn sm" data-act="manualTime" data-id="' + s.id + '">' + L('action.logTime') + '</button><button type="button" class="btn sm pri" data-act="studySubject" data-id="' + s.id + '">' + L('action.startSession') + '</button></div>' +
     '</article>';
   }
 
@@ -661,25 +813,31 @@
     const exams = (next.length ? '<div class="exam-list">' + next.map(x => examRow(x.e)).join('') + '</div>' : '<div class="empty"><p>' + L('agenda.noExams') + '</p></div>') +
       (past.length ? '<details class="past-details"><summary>' + L('agenda.past', { n: past.length }) + '</summary><div class="exam-list">' + past.map(x => examRow(x.e)).join('') + '</div></details>' : '');
 
-    return '<section class="section"><div class="section-head"><h2>' + L('section.weekly') + '</h2><button class="btn sm" data-act="newBlock">' + L('section.newBlock') + '</button></div>' + chips + week +
+    return recoveryNoticeHTML() +
+      '<section class="section"><div class="section-head"><h2>' + L('section.weekly') + '</h2><button class="btn sm" data-act="newBlock">' + L('section.newBlock') + '</button></div>' + chips + week +
       '<p class="agenda-summary">' + L('agenda.summary', {
         classes: fmtDur(mins('clase')),
         study: fmtDur(mins('estudio')),
         goal: goal ? L('agenda.goal', { goal: fmtMin(goal) }) : ''
       }) + '</p></section>' +
-      '<section class="section"><div class="section-head"><h2>' + L('section.exams') + '</h2><button class="btn sm" data-act="newExam">' + L('section.newDate') + '</button></div>' + exams + '</section>';
+      '<section class="section"><div class="section-head"><h2>' + L('section.exams') + '</h2><button class="btn sm" data-act="newExam">' + L('section.newDate') + '</button></div>' +
+      '<p class="settings-hint">' + L('exam.prep.note') + '</p>' + exams + '</section>';
   }
 
   function examRow(e) {
     const st = examState(e);
     const sb = sub(S, e.sid);
     const d = parseYmd(e.date);
+    const prep = examPrep(e);
     return '<button class="exam ' + st.cls + '" data-act="editExam" data-id="' + e.id + '">' +
       '<div class="exam-count"><div><strong>' + esc(st.big) + '</strong><span>' + esc(st.unit) + '</span></div></div>' +
-      '<div><div class="exam-title">' + esc(e.title) + '</div><div class="exam-meta">' +
+      '<div><div class="exam-title">' + esc(e.title) + '</div>' +
+      '<div class="prep-line" title="' + esc(prep.detail) + '"><div class="bar prep-' + prep.level + '"><i style="width:' + prep.pct + '%"></i></div>' +
+      '<span class="prep-label ' + prep.level + '">' + esc(prep.label) + ' · ' + prep.pct + '%</span></div>' +
+      '<div class="exam-meta">' +
       '<span class="tag">' + esc(kindText(e.kind)) + '</span>' +
       (sb ? '<span><span class="dot" style="background:' + sb.color + ';vertical-align:middle;margin-right:4px"></span>' + esc(sb.name) + '</span>' : '') +
-      '<span>' + D.short()[dayIdx(d)] + ' ' + d.getDate() + ' ' + D.mon()[d.getMonth()] + (e.time ? ' · ' + esc(e.time) : '') + '</span>' +
+      '<span>' + D.short()[dayIdx(d)] + ' ' + fmtShortDate(d) + (e.time ? ' · ' + esc(e.time) : '') + '</span>' +
       '</div></div></button>';
   }
   // Notas view
@@ -764,6 +922,100 @@
     if (scale.type === 'letter') return L('grades.scaleLetter', { pass: formatScalePass(scale) });
     return L('grades.scaleNumeric', { max: num(scale.max), pass: num(scale.pass) });
   }
+
+  // Flashcards
+  function cardDueBadge() {
+    return dueCards(S).length
+      ? '<span class="badge accent">' + C('fc.due', dueCards(S).length) + '</span>'
+      : '<span class="badge">' + L('fc.noDue') + '</span>';
+  }
+
+  function cardRow(c) {
+    const sb = sub(S, c.sid);
+    const mastered = c.reps >= 2 && c.interval >= 7 && c.lapses <= 1;
+    const due = c.due <= todayKey();
+    const status = mastered ? L('fc.mastered') : due ? L('fc.due.one') : L('fc.nextReview', { d: fmtShortDate(parseYmd(c.due)) });
+    return '<article class="card fc-card" style="--c:' + (sb ? sb.color : 'var(--muted)') + '">' +
+      '<div class="fc-card-top"><span class="tag">' + esc(sb ? sb.name : L('exam.prep.noSubject')) + '</span>' +
+      '<span class="badge' + (mastered ? ' good' : due ? ' accent' : '') + '">' + esc(status) + '</span></div>' +
+      '<div class="fc-face"><span class="eyebrow">' + L('fc.study.question') + '</span><p>' + esc(c.front) + '</p></div>' +
+      '<div class="fc-face answer"><span class="eyebrow">' + L('fc.study.answer') + '</span><p>' + esc(c.back) + '</p></div>' +
+      '<div class="card-footer">' +
+        '<button class="btn sm" data-act="editCard" data-id="' + c.id + '">' + L('action.edit') + '</button>' +
+        '<button class="btn sm pri" data-act="reviewOne" data-id="' + c.id + '">' + L('action.review') + '</button></div>' +
+      (c.lastReview ? '<div class="fc-footnote">' + esc(L('fc.lastReview', { d: fmtShortDate(parseYmd(c.lastReview.slice(0, 10))) })) + '</div>' : '') +
+      '</article>';
+  }
+
+  function flashcardStudyHTML() {
+    const c = S.flashcards.find(x => x.id === cardQueue[cardIndex]);
+    if (!c) {
+      return '<section class="section"><div class="panel fc-done">' +
+        '<div class="fc-done-icon">' + ic.check + '</div>' +
+        '<h2 class="section-title">' + L('fc.study.done') + '</h2>' +
+        '<p class="muted">' + L('fc.study.doneSub', { n: cardGrades.length, left: dueCards(S).length }) + '</p>' +
+        '<div class="fc-done-actions"><button class="btn pri" data-act="exitCards">' + L('action.backToCards') + '</button>' +
+        '<button class="btn ghost" data-act="reviewCards" data-sid="' + (S.ui.cardSid || '') + '">' + L('action.review') + '</button></div>' +
+        '</div></section>';
+    }
+    const sb = sub(S, c.sid);
+    return '<section class="section"><div class="section-head"><h2>' + L('fc.study.title') + '</h2>' +
+      '<button class="btn sm ghost" data-act="exitCards">' + L('action.backToCards') + '</button></div>' +
+      '<div class="fc-study" style="--c:' + (sb ? sb.color : 'var(--accent)') + '">' +
+        '<div class="fc-progress"><span class="tnum">' + L('fc.study.progress', { a: cardIndex + 1, b: cardQueue.length }) + '</span>' +
+        '<div class="bar"><i style="width:' + (cardIndex / cardQueue.length * 100) + '%"></i></div></div>' +
+        '<button type="button" class="fc-flip' + (cardFlipped ? ' flipped' : '') + '" data-act="flipCard" aria-label="' + L('fc.study.tap') + '">' +
+          '<div class="fc-side front"><span class="eyebrow">' + L('fc.study.question') + '</span>' +
+            '<p>' + esc(c.front) + '</p><span class="fc-hint">' + L('fc.study.tap') + '</span></div>' +
+          '<div class="fc-side back"><span class="eyebrow">' + L('fc.study.answer') + '</span>' +
+            '<p>' + esc(c.back) + '</p></div></button>' +
+        (cardFlipped
+          ? '<div class="fc-grades">' +
+              ['hard', 'good', 'easy'].map(g => '<button type="button" class="btn fc-grade ' + g + '" data-act="gradeCard" data-grade="' + g + '">' +
+                '<strong>' + L('fc.grade.' + g) + '</strong><span>' + L('fc.grade.' + g + 'Hint') + '</span></button>').join('') +
+              '</div>'
+          : '') +
+        '<p class="settings-hint">' + esc(L('fc.nextReview', { d: fmtShortDate(parseYmd(c.due)) })) + '</p>' +
+      '</div></section>';
+  }
+
+  function resetCardSession() {
+    cardQueue = []; cardIndex = 0; cardFlipped = false; cardGrades.length = 0;
+  }
+
+  function startCards(ids) {
+    resetCardSession();
+    cardQueue = ids.slice();
+    if (S.ui.tab !== 'flashcards') setTab('flashcards'); else renderView();
+    try { window.scrollTo({ top: 0, behavior: 'auto' }); } catch (e) {}
+  }
+
+  function viewFlashcards() {
+    if (cardQueue.length) return flashcardStudyHTML();
+    if (!S.subjects.length) {
+      return '<section class="section"><div class="empty"><p>' + L('fc.subjectsRequired') + '</p>' +
+        '<button class="btn pri" data-act="newSubject">' + L('action.newSubject') + '</button></div></section>';
+    }
+    const sid = S.ui.cardSid && sub(S, S.ui.cardSid) ? S.ui.cardSid : null;
+    const list = cardsBy(S, sid).slice().sort((a, b) => a.due.localeCompare(b.due));
+    const st = cardStats(S, sid);
+    const chips = '<div class="chips" role="group">' +
+      '<button class="chip ' + (sid ? '' : 'today') + '" data-act="cardFilter" data-sid="" aria-pressed="' + (!sid) + '">' + L('fc.all') + '</button>' +
+      S.subjects.map(s => '<button class="chip" data-act="cardFilter" data-sid="' + s.id + '" aria-pressed="' + (sid === s.id) + '">' +
+        '<span class="dot" style="background:' + s.color + '"></span>' + esc(s.name) + '</button>').join('') + '</div>';
+    const summary = '<div class="fc-summary">' +
+      '<span class="badge">' + C('fc.count', st.total) + '</span>' +
+      '<span class="badge accent">' + C('fc.due', st.due) + '</span>' +
+      '<span class="badge">' + L('fc.mastered') + ': ' + st.mastered + '</span></div>';
+    const toolbar = '<div class="section-toolbar"><button class="btn sm pri" data-act="newCard">' + L('action.newCard') + '</button>' +
+      '<button class="btn sm" data-act="reviewCards" data-sid="' + (sid || '') + '">' + L('action.review') + '</button>' + cardDueBadge() + '</div>';
+    const cards = list.length
+      ? '<div class="cards fc-grid">' + list.map(cardRow).join('') + '</div>'
+      : '<div class="empty"><p>' + L('fc.empty') + '</p><button class="btn pri" data-act="newCard">' + L('action.newCard') + '</button></div>';
+    return '<section class="section"><div class="section-head"><h2>' + L('section.flashcards') + '</h2>' +
+      '<span class="muted" style="font-size:13px">' + L('fc.subtitle') + '</span></div>' +
+      chips + summary + toolbar + cards + '</section>';
+  }
   // Modals
   function openModal(title, body, opts) {
     opts = opts || {};
@@ -830,6 +1082,7 @@
           S.exams = S.exams.filter(x => x.sid !== k);
           S.grades = S.grades.filter(x => x.sid !== k);
           S.units = S.units.filter(x => x.sid !== k);
+          S.flashcards = S.flashcards.filter(x => x.sid !== k);
           if (S.activeProgram) S.activeProgram.subjectIds = S.activeProgram.subjectIds.filter(id => id !== k);
           for (const d in S.log) { delete S.log[d][k]; if (!Object.keys(S.log[d]).length) delete S.log[d]; }
           afterChange();
@@ -917,6 +1170,28 @@
           afterChange();
         },
         onDelete() { S.grades = S.grades.filter(x => x.id !== id); afterChange(); }
+      });
+  }
+  function cardModal(id, sid) {
+    const c = id ? S.flashcards.find(x => x.id === id) : null;
+    const first = c ? c.sid : (sid || S.ui.cardSid || (S.subjects[0] && S.subjects[0].id));
+    openModal(L(c ? 'modal.card.edit' : 'modal.card.new'),
+      '<label class="field"><span>' + L('modal.card.subject') + '</span><select name="sid">' + subOpts(first) + '</select></label>' +
+      '<label class="field"><span>' + L('modal.card.front') + '</span><textarea name="front" rows="3" maxlength="300" placeholder="' + L('modal.card.frontPh') + '">' + esc(c ? c.front : '') + '</textarea></label>' +
+      '<label class="field"><span>' + L('modal.card.back') + '</span><textarea name="back" rows="3" maxlength="500" placeholder="' + L('modal.card.backPh') + '">' + esc(c ? c.back : '') + '</textarea></label>',
+      { del: !!c, submit: L(c ? 'action.save' : 'action.add'),
+        onSubmit(fd) {
+          const front = String(fd.get('front') || '').trim(), back = String(fd.get('back') || '').trim();
+          if (!front || !back) return { error: L('modal.card.required') };
+          const v = { sid: fd.get('sid'), front, back };
+          if (c) {
+            if (front !== c.front) delete c.demoKey;
+            if (back !== c.back) delete c.demoBackKey;
+            Object.assign(c, v);
+          } else S.flashcards.push(Object.assign(newCard(v.sid, front, back), v));
+          afterChange();
+        },
+        onDelete() { S.flashcards = S.flashcards.filter(x => x.id !== id); afterChange(); }
       });
   }
   function manualModal(sid) {
@@ -1396,7 +1671,7 @@
     });
   }
 
-  const TABS = ['estudio', 'agenda', 'notas', 'configuracion'];
+  const TABS = ['estudio', 'agenda', 'notas', 'flashcards', 'configuracion'];
 
   // Actions
   function setTab(t) {
@@ -1431,9 +1706,10 @@
       unlockAudio();
       const t = T();
       if (t.sid !== el.dataset.id) { commit(); t.sid = el.dataset.id; }
-      /* El panel se abre expandido y anclado en una esquina visible. */
+      /* El panel se abre expandido y anclado dentro del viewport (también en iOS). */
       S.ui.timerOpen = true; S.ui.min = false; S.ui.pos = null;
-      if (t.status !== 'running') startT(); else { save(S); renderWidget(); }
+      if (t.status !== 'running') startT();
+      else { save(S); renderWidget(); revealTimer(); }
     },
     manualTime(el) { manualModal(el.dataset.id); },
     newBlock(el) { blockModal(null, el.dataset.day != null ? +el.dataset.day : null); },
@@ -1442,6 +1718,43 @@
     editExam(el) { examModal(el.dataset.id); },
     newGrade(el) { if (needSubject()) gradeModal(null, el.dataset.sid); },
     editGrade(el) { gradeModal(el.dataset.id); },
+    newCard() { if (needSubject()) cardModal(); },
+    editCard(el) { cardModal(el.dataset.id); },
+    cardFilter(el) { S.ui.cardSid = el.dataset.sid || null; save(S); renderView(); },
+    reviewCards(el) {
+      const ids = dueCards(S, el.dataset.sid || null).map(c => c.id);
+      if (!ids.length) { toast(L('fc.noDue')); return; }
+      startCards(ids);
+    },
+    reviewOne(el) { startCards([el.dataset.id]); },
+    flipCard() { cardFlipped = !cardFlipped; renderView(); },
+    gradeCard(el) {
+      const c = S.flashcards.find(x => x.id === cardQueue[cardIndex]);
+      if (!c) return;
+      scheduleCard(c, el.dataset.grade);
+      cardGrades.push(el.dataset.grade);
+      cardIndex++; cardFlipped = false;
+      save(S); renderView();
+    },
+    exitCards() { resetCardSession(); renderView(); },
+    recoverBlock(el) {
+      const b = S.blocks.find(x => x.id === el.dataset.id);
+      if (!b) return;
+      const keys = missedStudyBlocks().filter(x => x.b.id === b.id).map(x => x.key);
+      const slot = suggestSlot(b);
+      if (!slot) { toast(L('recovery.noSlot')); return; }
+      b.day = slot.day; b.start = slot.start; b.end = slot.end;
+      const seen = Array.isArray(S.ui.recoverSeen) ? S.ui.recoverSeen : (S.ui.recoverSeen = []);
+      keys.forEach(k => { if (seen.indexOf(k) < 0) seen.push(k); });
+      S.ui.selDay = slot.day;
+      afterChange();
+      toast(L('recovery.done', { day: D.long()[slot.day], time: slot.start }));
+    },
+    dismissRecovery(el) {
+      const seen = Array.isArray(S.ui.recoverSeen) ? S.ui.recoverSeen : (S.ui.recoverSeen = []);
+      if (seen.indexOf(el.dataset.key) < 0) seen.push(el.dataset.key);
+      save(S); renderAll();
+    },
     scale() { scaleModal(); },
     importBackup() { importModal(); },
     exportJSON() { downloadFile(L('backup.file.json'), exportJSON(S), 'application/json'); },
@@ -1451,6 +1764,7 @@
     clearSample() {
       resetTimer(); const ui = S.ui, settings = S.settings;
       S = defaults(); S.ui = ui; S.settings = settings; S.timer.status = 'idle';
+      S.ui.cardSid = null; S.ui.recoverSeen = []; resetCardSession();
       closeTimerPanel(); afterChange();
     },
     resetAll() {
@@ -1460,11 +1774,11 @@
       S = defaults();
       S.ui.timerOpen = false; S.ui.min = false; S.ui.pos = null;
       try { localStorage.removeItem(SFS.LEGACY_KEY); } catch (e) {}
-      closedG.clear(); unitDraft = null;
+      closedG.clear(); unitDraft = null; resetCardSession();
       save(S); renderAll();
       toast(L('backup.resetAllDone'));
     },
-    twMin() { S.ui.min = !S.ui.min; S.ui.pos = null; save(S); renderWidget(); },
+    twMin() { S.ui.min = !S.ui.min; S.ui.pos = null; save(S); renderWidget(); revealTimer(); },
     twCfg() { S.ui.cfg = !S.ui.cfg; save(S); renderWidget(); },
     twMode(el) { setMode(el.dataset.mode); },
     twToggle() { toggleT(); },
@@ -1522,7 +1836,7 @@
     renderAll();
   });
 
-  const SW_VERSION = 'studyflow-v1.0.9';
+  const SW_VERSION = 'studyflow-v1.1.2';
   let reloading = false;
 
   /* Pregunta al worker activo su versión. Un worker anterior no entiende el
@@ -1596,7 +1910,11 @@
       if (SFS.localizeSample && SFS.localizeSample(S)) save(S);
       ensureTimerSubject();
       const t = T();
-      if (t.status !== 'idle') S.ui.timerOpen = true;
+      if (t.status !== 'idle') {
+        S.ui.timerOpen = true;
+        /* En móvil un temporizador activo se muestra siempre expandido y anclado. */
+        if (isCompact()) { S.ui.min = false; S.ui.pos = null; }
+      }
       if (t.status === 'running') {
         const seen = t.seen || t.startedAt;
         if (seen && Date.now() - seen > 3 * 3600 * 1000) { t.acc += Math.max(0, seen - t.startedAt); t.startedAt = null; t.status = 'paused'; }
@@ -1605,6 +1923,7 @@
       if (TABS.indexOf(h) >= 0) S.ui.tab = h;
       initDrag();
       renderAll();
+      revealTimer();
       if (T().status === 'running') wake(true);
       setInterval(tick, 1000);
     } catch (e) {

@@ -4,7 +4,7 @@
 (function () {
   'use strict';
 
-  var VERSION = 'studyflow-v1.0.9';
+  var VERSION = 'studyflow-v1.1.2';
   var SCOPE = self.registration.scope;
   function abs(p) { return new URL(p, SCOPE).href; }
   var INDEX = abs('./index.html');
