@@ -14,6 +14,9 @@
 - **Subjects** with weekly hour goals and a syllabus progress slider.
 - **Weekly schedule** with classes and study blocks, plus a per-day agenda.
 - **Exams & deadlines** with live countdowns (days, hours and minutes).
+- **Flashcards with spaced repetition** — build subject-specific decks and review cards on an intelligent schedule.
+- **Smart recovery of lost sessions** — restore sessions interrupted by a reload or a closed tab without losing tracked time.
+- **Indicative exam readiness** — a guidance indicator that suggests how prepared you are based on syllabus coverage and study time.
 - **Grades** with configurable numeric or A–F scales, weights and a dynamic "average needed" calculation.
 - **Focus timer** with Pomodoro and free-stopwatch modes, draggable and minimizable, with automatic time logging.
 - **14-day chart** of study time, colored by subject.
@@ -65,6 +68,9 @@ Copyright (c) 2026 Wolver-Fik. Licensed under the [PolyForm Noncommercial Licens
 - **Materias** con objetivo semanal de horas y barra de avance del temario.
 - **Horario semanal** con clases y bloques de estudio, y una agenda por día.
 - **Exámenes y entregas** con cuenta regresiva en vivo (días, horas y minutos).
+- **Tarjetas de memoria (flashcards) con repetición espaciada** — creá mazos por materia y repasá las tarjetas con una programación inteligente.
+- **Recuperación inteligente de sesiones perdidas** — recuperá sesiones interrumpidas por una recarga o una pestaña cerrada sin perder el tiempo registrado.
+- **Indicador orientativo de preparación para exámenes** — una guía que sugiere qué tan preparado estás según el temario cubierto y el tiempo estudiado.
 - **Notas** con escalas numéricas o A–F configurables, pesos y un cálculo dinámico del promedio necesario para aprobar.
 - **Temporizador de enfoque** con Pomodoro y cronómetro libre, arrastrable y minimizable, que registra el tiempo automáticamente.
 - **Gráfico de 14 días** del tiempo estudiado, coloreado por materia.
