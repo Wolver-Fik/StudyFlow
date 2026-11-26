@@ -4,10 +4,10 @@
 (function () {
   'use strict';
 
-  /* Etapa 1: sube la version con cada cambio. activate solo purga CacheStorage;
+  /* Etapa 2: sube la version con cada cambio. activate solo purga CacheStorage;
      nunca borra IndexedDB (studyflow_db) ni localStorage. */
-  var VERSION = 'studyflow-v1.2.0';
-  var CACHE = VERSION;
+  var CACHE = 'studyflow-v1.3.2';
+  var VERSION = CACHE;
   var SCOPE = self.registration.scope;
   function abs(p) { return new URL(p, SCOPE).href; }
   var INDEX = abs('./index.html');

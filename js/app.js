@@ -13,6 +13,8 @@
     defaults, normalizeScale, load, save, sampleState,
     sub, unitsBy, unitStats, syncProgress,
     cardsBy, dueCards, newCard, scheduleCard, cardStats,
+    newQuestion, generateQuestionsFromCards, importQuestionsFromCards,
+    quizScore, finishQuiz, unitMastery,
     addLog, daySec, totalSec, weekDates, secBy, streak,
     formatGrade, formatScaleMax, formatScalePass, exportJSON, exportCSV, downloadFile
   } = SFS;
@@ -90,6 +92,21 @@
   let cardIndex = 0;
   let cardFlipped = false;
   const cardGrades = [];
+
+  /* Etapa 2: el simulacro vive en memoria (como el repaso de tarjetas).
+     El resultado ya corregido sí se persiste en el historial del estado. */
+  let quizOverlay = null;      // 'bank' | 'setup' | 'exam' | 'result' | 'history'
+  let quizBankSid = null;
+  let quizHistorySid = null;
+  let quizSetup = null;        // { sid, unitId, minutes, count }
+  let exam = null;             // sesión en curso
+  let examTimer = null;
+  let lastResult = null;
+  let bankReturnSid = null;
+  /* Preguntas generadas al vuelo desde tarjetas: no se guardan en el banco,
+     pero viven en memoria durante la sesión para que el repaso de falladas
+     pueda seguir encontrándolas. */
+  let autoQuizzes = Object.create(null);
 
   const svgIcon = (d, stroke) => '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" ' + (stroke ? 'fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"' : 'fill="currentColor"') + '>' + d + '</svg>';
   const ic = {
@@ -264,6 +281,9 @@
   function setMode(m) { const t = T(); if (t.mode === m) return; commit(); resetTimer(); t.mode = m; save(S); renderWidget(); renderView(); }
   function tick() {
     const t = T(), now = Date.now(); tickN++;
+    /* El simulacro se cierra solo al agotar el tiempo, aunque el panel de
+       enfoque esté detenido. Su propio intervalo actualiza la cuenta. */
+    if (exam && quizOverlay === 'exam' && now >= exam.endsAt) { finishExam(true); return; }
     if (t.status === 'running') {
       t.seen = now;
       if (t.mode === 'pomo' && elapsedMs(t, now) >= phaseLenMs(t)) {
@@ -477,7 +497,7 @@
   }
 
   function renderAll() { renderTabs(); renderNotice(); renderView(); renderWidget(); bindConfig(); }
-  function afterChange() { ensureTimerSubject(); save(S); renderAll(); }
+  function afterChange() { ensureTimerSubject(); resetAutoQuizzes(); save(S); renderAll(); }
 
   // Exam / next session helpers
   function kindText(kind) {
@@ -723,11 +743,38 @@
       : '';
     const subjectToolbar = '<div class="section-toolbar">' +
       '<button class="btn sm pri" data-act="newSubject">' + L('action.newSubject') + '</button>' +
-      '<button class="btn sm ghost" data-act="curriculum">' + ic.book + '<span>' + L('action.importCareer') + '</span></button>' + activeBadge + '</div>';
+      '<button class="btn sm ghost" data-act="curriculum">' + ic.book + '<span>' + L('action.importCareer') + '</span></button>' +
+      '<button class="btn sm" data-act="mockExam">' + L('action.mockExam') + '</button>' +
+      '<button class="btn sm ghost" data-act="examHistory">' + L('action.examHistory') + '</button>' + activeBadge + '</div>';
 
     return hero + kpis +
       '<section class="section"><div class="section-head"><h2>' + L('section.subjects') + '</h2><span class="muted" style="font-size:13px">' + (S.subjects.length ? L('section.avgProgress', { n: avgP }) : '') + '</span></div>' + subjectToolbar + subjectCards + '</section>' +
       '<section class="section"><div class="section-head"><h2>' + L('section.last14') + '</h2><div class="chart-legend">' + legend + '</div></div><div class="panel chart-panel">' + chartHTML() + '</div></section>';
+  }
+
+  /* Dominio por unidad: temario completado + flashcards + aciertos en
+     simulacros. Se calcula en SFStore para que la misma regla alimente las
+     barras y cualquier otro indicador de la app. */
+  function masteryHTML(s) {
+    const rows = unitsBy(S, s.id);
+    const body = rows.length ? rows.map(u => {
+      const m = unitMastery(S, s.id, u.id);
+      const color = m.pct >= 80 ? 'var(--sage)' : m.pct >= 50 ? 'var(--accent)' : 'var(--bad)';
+      const parts = [];
+      if (m.parts.tasks != null) parts.push(L('mastery.task') + ' ' + m.parts.tasks + '%');
+      if (m.parts.cards != null) parts.push(L('mastery.cards') + ' ' + m.parts.cards + '%');
+      if (m.parts.quiz != null) parts.push(L('mastery.quiz') + ' ' + m.parts.quiz + '%');
+      return '<div class="mastery-row">' +
+        '<div class="metric-row"><span class="metric-label mastery-name">' + esc(u.name) + '</span>' +
+        '<span class="metric-val mastery-pct"><strong>' + m.pct + '%</strong></span></div>' +
+        '<div class="bar mastery-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + m.pct + '" aria-label="' + L('mastery.aria', { name: esc(u.name) }) + '">' +
+        '<i style="width:' + m.pct + '%;background:' + color + '"></i></div>' +
+        (parts.length ? '<div class="mastery-parts">' + esc(parts.join(' · ')) + '</div>' : '') +
+        '</div>';
+    }).join('') : '<p class="muted unit-empty">' + L('mastery.noUnits') + '</p>';
+    return '<details class="mastery-details"><summary>' +
+      '<span>' + L('section.mastery') + '</span><span class="muted">' + L('mastery.subtitle') + '</span>' +
+      '</summary><div class="mastery-list">' + body + '</div></details>';
   }
 
   function subjectCard(s) {
@@ -740,6 +787,11 @@
     const unitLine = '<div class="card-units">' +
       '<span class="card-units-count">' + L('curriculum.units.progress', { a: us.done, b: us.total }) + '</span>' +
       '<button class="link-btn" data-act="units" data-id="' + s.id + '">' + L('curriculum.units.manage') + '</button></div>';
+    const nq = (S.questions || []).filter(q => q.sid === s.id).length;
+    const nqz = (S.quizHistory || []).filter(r => r.sid === s.id).length;
+    const bankLine = '<div class="card-units quiz-line">' +
+      '<span class="card-units-count">' + L('quiz.bank.count', { n: nq }) + ' · ' + L('quiz.history.count', { n: nqz }) + '</span>' +
+      '<button class="link-btn" data-act="questionBank" data-id="' + s.id + '">' + L('action.questionBank') + '</button></div>';
     return '<article class="card" style="--c:' + s.color + '">' +
       '<div class="card-head"><h3 class="card-title"><span class="dot" style="background:' + s.color + '"></span><span>' + esc(s.name) + '</span></h3>' +
       '<button class="btn ghost sm" data-act="editSubject" data-id="' + s.id + '">' + L('subject.edit') + '</button></div>' +
@@ -750,8 +802,11 @@
         '<input type="range" class="range" id="pg-' + s.id + '" data-id="' + s.id + '" min="0" max="100" step="5" value="' + (s.progress || 0) + '" aria-label="' + L('subject.progressAria', { name: esc(s.name) }) + '"></div>' +
         '<div class="metric-row" style="margin:0"><span class="metric-label">' + L('subject.total') + '</span><span class="metric-val"><strong>' + fmtDur(totalSec(S, s.id)) + '</strong></span></div>' +
       '</div>' +
-      unitLine +
-      '<div class="card-footer"><button class="btn sm" data-act="manualTime" data-id="' + s.id + '">' + L('action.logTime') + '</button><button type="button" class="btn sm pri" data-act="studySubject" data-id="' + s.id + '">' + L('action.startSession') + '</button></div>' +
+      unitLine + bankLine + masteryHTML(s) +
+      '<div class="card-footer">' +
+        '<button class="btn sm" data-act="manualTime" data-id="' + s.id + '">' + L('action.logTime') + '</button>' +
+        '<button class="btn sm" data-act="mockExam" data-id="' + s.id + '">' + L('action.mockExam') + '</button>' +
+        '<button type="button" class="btn sm pri" data-act="studySubject" data-id="' + s.id + '">' + L('action.startSession') + '</button></div>' +
     '</article>';
   }
 
@@ -1020,6 +1075,7 @@
   function openModal(title, body, opts) {
     opts = opts || {};
     closeModal();
+    closeQuizOverlay();
     $('#modalRoot').innerHTML = '<div class="overlay" data-act="overlay"><div class="sheet" role="dialog" aria-modal="true" aria-label="' + esc(title) + '">' +
       '<div class="sheet-head"><h2>' + esc(title) + '</h2><button class="icon-btn" data-act="closeModal" aria-label="' + L('action.close') + '">' + ic.x + '</button></div>' +
       '<form id="mForm" novalidate><div class="sheet-body"><div class="form">' + body + '<div class="form-error" id="fErr" role="alert" hidden></div></div></div>' +
@@ -1043,11 +1099,22 @@
     if (!modal) return;
     const p = modal.prev; modal = null; $('#modalRoot').innerHTML = '';
     try { if (p && p.isConnected) p.focus(); } catch (e) {}
+    /* Al cerrar el editor de preguntas se vuelve al banco de origen. */
+    if (bankReturnSid) { const sid = bankReturnSid; bankReturnSid = null; setTimeout(() => renderBank(sid), 0); }
   }
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && modal) closeModal(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    if (modal) closeModal();
+    else if (quizOverlay) closeQuizOverlay();
+  });
 
   function subOpts(sel, none) {
     return (none ? '<option value="">' + L('modal.noSubject') + '</option>' : '') + S.subjects.map(s => '<option value="' + s.id + '"' + (s.id === sel ? ' selected' : '') + '>' + esc(s.name) + '</option>').join('');
+  }
+  function unitOpts(sid, selected, none, firstLabel) {
+    const list = unitsBy(S, sid);
+    return (none ? '<option value="">' + esc(firstLabel || L('quiz.modal.unit.all')) + '</option>' : '') +
+      list.map(u => '<option value="' + u.id + '"' + (u.id === selected ? ' selected' : '') + '>' + esc(u.name) + '</option>').join('');
   }
   function needSubject() { if (S.subjects.length) return true; subjectModal(); return false; }
 
@@ -1083,6 +1150,9 @@
           S.grades = S.grades.filter(x => x.sid !== k);
           S.units = S.units.filter(x => x.sid !== k);
           S.flashcards = S.flashcards.filter(x => x.sid !== k);
+          S.questions = (S.questions || []).filter(x => x.sid !== k);
+          S.quizHistory = (S.quizHistory || []).filter(x => x.sid !== k);
+          if (quizOverlay) closeQuizOverlay();
           if (S.activeProgram) S.activeProgram.subjectIds = S.activeProgram.subjectIds.filter(id => id !== k);
           for (const d in S.log) { delete S.log[d][k]; if (!Object.keys(S.log[d]).length) delete S.log[d]; }
           afterChange();
@@ -1177,23 +1247,369 @@
     const first = c ? c.sid : (sid || S.ui.cardSid || (S.subjects[0] && S.subjects[0].id));
     openModal(L(c ? 'modal.card.edit' : 'modal.card.new'),
       '<label class="field"><span>' + L('modal.card.subject') + '</span><select name="sid">' + subOpts(first) + '</select></label>' +
+      '<label class="field"><span>' + L('mastery.unit') + '</span><select id="cardUnit" name="unitId">' + unitOpts(first, c ? c.unitId : '', true, L('quiz.modal.q.none')) + '</select></label>' +
       '<label class="field"><span>' + L('modal.card.front') + '</span><textarea name="front" rows="3" maxlength="300" placeholder="' + L('modal.card.frontPh') + '">' + esc(c ? c.front : '') + '</textarea></label>' +
       '<label class="field"><span>' + L('modal.card.back') + '</span><textarea name="back" rows="3" maxlength="500" placeholder="' + L('modal.card.backPh') + '">' + esc(c ? c.back : '') + '</textarea></label>',
       { del: !!c, submit: L(c ? 'action.save' : 'action.add'),
         onSubmit(fd) {
           const front = String(fd.get('front') || '').trim(), back = String(fd.get('back') || '').trim();
           if (!front || !back) return { error: L('modal.card.required') };
-          const v = { sid: fd.get('sid'), front, back };
+          const v = { sid: fd.get('sid'), unitId: fd.get('unitId') || '', front, back };
           if (c) {
             if (front !== c.front) delete c.demoKey;
             if (back !== c.back) delete c.demoBackKey;
             Object.assign(c, v);
-          } else S.flashcards.push(Object.assign(newCard(v.sid, front, back), v));
+          } else S.flashcards.push(Object.assign(newCard(v.sid, front, back, v.unitId), v));
           afterChange();
         },
         onDelete() { S.flashcards = S.flashcards.filter(x => x.id !== id); afterChange(); }
       });
+    const sidSel = $('#mForm select[name="sid"]');
+    if (sidSel) sidSel.addEventListener('change', () => {
+      const sel = $('#cardUnit');
+      if (sel) sel.innerHTML = unitOpts(sidSel.value, '', true, L('quiz.modal.q.none'));
+    });
   }
+
+  /* ---------- Etapa 2: banco de preguntas y simulacro cronometrado ---------- */
+
+  function clearExamTimer() {
+    if (examTimer) { clearInterval(examTimer); examTimer = null; }
+  }
+  function closeQuizOverlay() {
+    clearExamTimer();
+    quizOverlay = null;
+    lastResult = null;
+    const root = $('#modalRoot');
+    if (root) root.innerHTML = '';
+  }
+  function openQuizOverlay(kind) {
+    closeModal();
+    closeQuizOverlay();
+    quizOverlay = kind;
+  }
+  function shuffle(arr) {
+    const a = arr.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const t = a[i]; a[i] = a[j]; a[j] = t;
+    }
+    return a;
+  }
+  function resetAutoQuizzes() { autoQuizzes = Object.create(null); }
+  function autoPool(sid) {
+    if (!sid) return [];
+    if (!Object.prototype.hasOwnProperty.call(autoQuizzes, sid)) {
+      autoQuizzes[sid] = generateQuestionsFromCards(S, sid);
+    }
+    return autoQuizzes[sid] || [];
+  }
+  /* Banco escrito por la persona + preguntas generadas desde sus tarjetas. */
+  function quizPoolFor(sid, unitId) {
+    const bank = (S.questions || []).filter(q => q.sid === sid && (!unitId || q.unitId === unitId));
+    const auto = autoPool(sid).filter(q => !unitId || q.unitId === unitId);
+    const seen = Object.create(null);
+    return bank.concat(auto).filter(q => {
+      const k = String(q.text || '').trim().toLowerCase();
+      if (!k || seen[k]) return false;
+      seen[k] = true;
+      return true;
+    });
+  }
+  function quizById(id) {
+    const own = (S.questions || []).find(q => q.id === id);
+    if (own) return own;
+    for (const sid in autoQuizzes) {
+      const found = (autoQuizzes[sid] || []).find(q => q.id === id);
+      if (found) return found;
+    }
+    return null;
+  }
+  function fmtClockShort(ms) {
+    const s = Math.max(0, Math.ceil(ms / 1000));
+    return pad(Math.floor(s / 60)) + ':' + pad(s % 60);
+  }
+
+  function renderBank(sid) {
+    const s = sub(S, sid);
+    if (!s) { closeQuizOverlay(); return; }
+    quizBankSid = sid; quizOverlay = 'bank';
+    const all = (S.questions || []).filter(q => q.sid === sid);
+    const rows = all.length ? all.map(q => {
+      const u = unitsBy(S, sid).find(x => x.id === q.unitId);
+      return '<div class="qz-row' + (q.demoKey ? ' is-demo' : '') + '">' +
+        '<div class="qz-row-main"><span class="qz-row-text">' + esc(q.text) + '</span>' +
+        '<span class="qz-row-meta">' + (u ? esc(u.name) : L('quiz.modal.q.none')) + ' · ' + esc(q.options[q.answer] || '') + '</span></div>' +
+        '<div class="qz-row-actions">' +
+        '<button class="icon-btn" data-act="editQuestion" data-id="' + q.id + '" aria-label="' + L('action.edit') + '">' + ic.sliders + '</button>' +
+        '<button class="icon-btn" data-act="deleteQuestion" data-id="' + q.id + '" data-confirm="' + L('quiz.bank.deleteConfirm') + '" aria-label="' + L('action.delete') + '">' + ic.trash + '</button>' +
+        '</div></div>';
+    }).join('') : '<p class="muted unit-empty">' + L('quiz.bank.empty') + '</p>';
+    $('#modalRoot').innerHTML = '<div class="overlay" data-act="quizOverlay">' +
+      '<div class="sheet" role="dialog" aria-modal="true" aria-label="' + esc(s.name + ' · ' + L('action.questionBank')) + '">' +
+      '<div class="sheet-head"><h2>' + esc(L('action.questionBank') + ' · ' + s.name) + '</h2>' +
+      '<button class="icon-btn" data-act="closeQuizOverlay" aria-label="' + L('action.close') + '">' + ic.x + '</button></div>' +
+      '<div class="sheet-body"><p class="muted curr-intro">' + L('quiz.bank.subtitle') + '</p>' +
+      '<div class="qz-list">' + rows + '</div></div>' +
+      '<div class="sheet-foot"><span class="badge">' + L('quiz.bank.count', { n: all.length }) + '</span>' +
+      '<div class="sheet-actions">' +
+      '<button class="btn sm" data-act="examHistory" data-id="' + sid + '">' + L('action.examHistory') + '</button>' +
+      '<button class="btn sm" data-act="mockExam" data-id="' + sid + '">' + L('action.mockExam') + '</button>' +
+      '<button class="btn sm" data-act="generateFromCards" data-id="' + sid + '">' + L('action.generateFromCards') + '</button>' +
+      '<button class="btn sm pri" data-act="newQuestion" data-id="' + sid + '">' + L('action.newQuestion') + '</button>' +
+      '</div></div></div></div>';
+  }
+
+  /* Importa las flashcards de la materia al banco persistido y refresca el
+     modal en el acto para que se vean, editen o eliminen ahí mismo. */
+  function importFromCards(sid) {
+    sid = sid || quizBankSid;
+    if (!sub(S, sid)) return;
+    const r = importQuestionsFromCards(S, sid);
+    if (!r.added) {
+      const key = r.reason === 'few' ? 'quiz.bank.generateFew'
+        : r.reason === 'all' ? 'quiz.bank.generateAll'
+        : 'quiz.bank.generateNoOptions';
+      toast(L(key));
+      return;
+    }
+    afterChange();
+    renderBank(sid);
+    toast(C('quiz.bank.generated', r.added));
+  }
+
+  function questionModal(id, sid) {
+    const q = id ? quizById(id) : null;
+    const first = q ? q.sid : (sid || S.ui.cardSid || (S.subjects[0] && S.subjects[0].id));
+    if (!first) { subjectModal(); return; }
+    openModal(L(q ? 'quiz.modal.q.edit' : 'quiz.modal.q.new'),
+      '<label class="field"><span>' + L('quiz.modal.q.subject') + '</span><select name="sid">' + subOpts(first) + '</select></label>' +
+      '<label class="field"><span>' + L('quiz.modal.q.unit') + '</span><select id="qUnit" name="unitId">' + unitOpts(first, q ? q.unitId : '', true, L('quiz.modal.unit.all')) + '</select></label>' +
+      '<label class="field"><span>' + L('quiz.modal.q.text') + '</span><textarea name="text" rows="3" maxlength="500" placeholder="' + L('quiz.modal.q.textPh') + '">' + esc(q ? q.text : '') + '</textarea></label>' +
+      [0, 1, 2, 3].map(i => '<label class="field"><span>' + L('quiz.modal.q.option') + ' ' + 'ABCD'[i] + '</span>' +
+        '<input name="o' + i + '" maxlength="300" placeholder="' + L('quiz.modal.q.optionPh') + '" value="' + esc(q ? (q.options[i] || '') : '') + '"></label>').join('') +
+      '<label class="field"><span>' + L('quiz.modal.q.correct') + '</span><select name="answer">' +
+      [0, 1, 2, 3].map(i => '<option value="' + i + '"' + ((q ? q.answer : 0) === i ? ' selected' : '') + '>' + 'ABCD'[i] + '</option>').join('') + '</select></label>',
+      { del: !!q, submit: L(q ? 'action.save' : 'action.add'),
+        onSubmit(fd) {
+          const text = String(fd.get('text') || '').trim();
+          const options = [0, 1, 2, 3].map(i => String(fd.get('o' + i) || '').trim());
+          const answer = clamp(Math.round(fnum(fd.get('answer'))) || 0, 0, 3);
+          if (!text) return { error: L('quiz.modal.q.required') };
+          if (options.some(o => !o)) return { error: L('quiz.modal.q.optionsRequired') };
+          const next = { sid: fd.get('sid'), unitId: fd.get('unitId') || '', text, options, answer };
+          if (q) {
+            if (text !== q.text) delete q.demoKey;
+            if (options.join('|') !== (q.options || []).join('|')) q.demoOptionKeys = null;
+            Object.assign(q, next);
+          } else S.questions.push(Object.assign(newQuestion(next.sid, next.unitId, text, options, answer), next));
+          bankReturnSid = null;
+          afterChange();
+          /* openModal cierra el formulario justo después de onSubmit. */
+          setTimeout(() => renderBank(next.sid), 0);
+        },
+        onDelete() {
+          const owner = q ? q.sid : sid;
+          S.questions = (S.questions || []).filter(x => x.id !== id);
+          save(S); renderView(); renderBank(owner);
+        }
+      });
+    bankReturnSid = q ? q.sid : (sid || first);
+    const sidSel = $('#mForm select[name="sid"]');
+    if (sidSel) sidSel.addEventListener('change', () => {
+      const sel = $('#qUnit');
+      if (sel) sel.innerHTML = unitOpts(sidSel.value, '', true, L('quiz.modal.unit.all'));
+    });
+  }
+
+  function setupModal(sid) {
+    if (!S.subjects.length) { if (needSubject()) toast(L('quiz.modal.exam.noQuestions')); return; }
+    const first = sid && sub(S, sid) ? sid : S.ui.cardSid || S.subjects[0].id;
+    const available = quizPoolFor(first, '');
+    quizSetup = { sid: first, unitId: '', minutes: 10, count: Math.min(10, available.length) };
+    openModal(L('quiz.modal.exam.title'),
+      '<label class="field"><span>' + L('quiz.modal.exam.subject') + '</span><select id="qzSid" name="sid">' + subOpts(first) + '</select></label>' +
+      '<label class="field"><span>' + L('quiz.modal.exam.unit') + '</span><select id="qzUnit" name="unitId">' + unitOpts(first, '', true, L('quiz.modal.unit.all')) + '</select></label>' +
+      '<div class="row2">' +
+      '<label class="field"><span>' + L('quiz.modal.exam.duration') + '</span><select name="minutes">' +
+      [10, 20, 30].map(m => '<option value="' + m + '"' + (m === 10 ? ' selected' : '') + '>' + m + ' ' + L('unit.minute') + '</option>').join('') + '</select></label>' +
+      '<label class="field"><span>' + L('quiz.modal.exam.count') + '</span><input id="qzCount" type="number" inputmode="numeric" min="1" max="100" value="' + Math.max(1, available.length) + '"></label></div>' +
+      '<p class="settings-hint">' + L('quiz.modal.exam.hint', { n: available.length }) + '</p>',
+      { submit: L('quiz.modal.exam.start'),
+        onSubmit(fd) {
+          const sid2 = fd.get('sid') || first;
+          const pool = quizPoolFor(sid2, fd.get('unitId'));
+          if (!pool.length) return { error: L('quiz.modal.exam.noQuestions') };
+          const want = clamp(Math.round(fnum($('#qzCount') ? $('#qzCount').value : pool.length)) || pool.length, 1, pool.length);
+          startExam(sid2, fd.get('unitId') || '', clamp(Math.round(fnum(fd.get('minutes'))) || 10, 1, 180), pool, want);
+        }
+      });
+    const refreshCount = () => {
+      const pool = quizPoolFor(sidSel.value, unitSel.value);
+      const input = $('#qzCount');
+      if (input) { input.max = Math.max(1, pool.length); input.value = Math.max(1, Math.min(pool.length, +(input.value || pool.length))); }
+    };
+    const sidSel = $('#qzSid'), unitSel = $('#qzUnit');
+    if (sidSel) sidSel.addEventListener('change', () => {
+      if (unitSel) unitSel.innerHTML = unitOpts(sidSel.value, '', true, L('quiz.modal.unit.all'));
+      refreshCount();
+    });
+    if (unitSel) unitSel.addEventListener('change', refreshCount);
+  }
+
+  function startExam(sid, unitId, minutes, pool, count) {
+    closeModal(); closeQuizOverlay();
+    const list = shuffle(pool).slice(0, Math.max(1, count || pool.length));
+    if (!list.length) { toast(L('quiz.modal.exam.noQuestions')); return; }
+    exam = {
+      sid: sid, unitId: unitId || '', minutes: minutes,
+      endsAt: Date.now() + minutes * 60000,
+      questions: list, answers: {}, index: 0, total: list.length
+    };
+    quizOverlay = 'exam';
+    renderExam();
+    clearExamTimer();
+    examTimer = setInterval(tickExam, 1000);
+  }
+
+  function readExamChoice() {
+    if (!exam) return;
+    const q = exam.questions[exam.index];
+    if (!q) return;
+    const checked = $('#modalRoot input[name="qzAns"]:checked');
+    if (checked) exam.answers[q.id] = +checked.value;
+  }
+
+  function renderExam() {
+    if (!exam) { closeQuizOverlay(); return; }
+    quizOverlay = 'exam';
+    const q = exam.questions[exam.index];
+    const chosen = exam.answers[q.id];
+    const opts = q.options.map((text, i) =>
+      '<label class="qz-option' + (chosen === i ? ' picked' : '') + '">' +
+      '<input type="radio" name="qzAns" value="' + i + '"' + (chosen === i ? ' checked' : '') + '>' +
+      '<span class="qz-opt-letter">' + 'ABCD'[i] + '</span><span class="qz-opt-text">' + esc(text) + '</span></label>').join('');
+    const left = Math.max(0, exam.endsAt - Date.now());
+    $('#modalRoot').innerHTML = '<div class="overlay" data-act="quizOverlay"><div class="sheet qz-sheet" role="dialog" aria-modal="true" aria-label="' + L('quiz.exam.title') + '">' +
+      '<div class="sheet-head"><div><h2>' + L('quiz.exam.title') + '</h2>' +
+      '<span class="qz-exam-meta">' + esc((sub(S, exam.sid) || {}).name || '') + '</span></div>' +
+      '<button class="icon-btn qz-clock" id="qzClock" aria-label="' + L('quiz.exam.time') + '">' + fmtClockShort(left) + '</button></div>' +
+      '<div class="sheet-body"><div class="qz-exam-progress">' +
+      '<span class="tnum">' + L('quiz.exam.progress', { a: exam.index + 1, b: exam.total }) + '</span>' +
+      '<div class="bar"><i id="qzBar" style="width:' + (exam.index / exam.total * 100) + '%"></i></div></div>' +
+      '<div class="qz-question"><span class="eyebrow">' + L('quiz.exam.question') + '</span>' +
+      '<p>' + esc(q.text) + '</p></div>' +
+      '<div class="qz-options" role="radiogroup" aria-label="' + L('quiz.exam.choose') + '">' + opts + '</div></div>' +
+      '<div class="sheet-foot"><button class="btn ghost" data-act="closeQuizOverlay" data-confirm="' + L('quiz.exam.leaveConfirm') + '">' + L('action.close') + '</button>' +
+      '<div class="sheet-actions">' +
+      '<button class="btn sm" data-act="qzPrev"' + (exam.index ? '' : ' disabled') + '>' + L('quiz.exam.prev') + '</button>' +
+      (exam.index + 1 < exam.total
+        ? '<button class="btn sm pri" data-act="qzNext">' + L('quiz.exam.next') + '</button>'
+        : '<button class="btn sm pri" data-act="qzFinish" data-confirm="' + L('quiz.exam.finishConfirm') + '">' + L('quiz.exam.finish') + '</button>') +
+      '</div></div></div></div>';
+  }
+
+  function tickExam() {
+    if (!exam || quizOverlay !== 'exam') { clearExamTimer(); return; }
+    const left = exam.endsAt - Date.now();
+    const clock = $('#qzClock');
+    if (clock) {
+      clock.textContent = fmtClockShort(left);
+      clock.classList.toggle('urgent', left <= 60000);
+    }
+    const bar = $('#qzBar');
+    if (bar) bar.style.width = (100 - clamp(left / (exam.minutes * 60000) * 100, 0, 100)) + '%';
+    if (left <= 0) finishExam(true);
+  }
+
+  function finishExam(auto) {
+    if (!exam) return;
+    readExamChoice();
+    clearExamTimer();
+    const answers = exam.questions.map(q => {
+      const chosen = exam.answers[q.id] == null ? -1 : exam.answers[q.id];
+      return { qid: q.id, unitId: q.unitId || '', chosen: chosen, answer: q.answer, ok: chosen === q.answer };
+    });
+    const sc = quizScore(answers.filter(a => a.ok).length, answers.length, S.settings.scale);
+    const rec = {
+      id: uid(), sid: exam.sid, unitId: exam.unitId || '', at: new Date().toISOString(),
+      minutes: exam.minutes, total: answers.length, correct: sc.correct, wrong: sc.wrong,
+      percent: sc.percent, score: sc.score, grade: sc.grade, pass: sc.pass,
+      scale: sc.scale, answers: answers, auto: !!auto
+    };
+    finishQuiz(S, rec);
+    save(S); renderView();
+    exam = null;
+    renderResult(rec);
+    if (auto) toast(L('quiz.exam.timeUp'));
+  }
+
+  function answerText(q, i) {
+    return q && q.options && q.options[i] != null ? q.options[i] : '—';
+  }
+  function missedHTML(rec) {
+    return rec.answers.filter(a => !a.ok).map(a => {
+      const q = quizById(a.qid);
+      return '<div class="qz-review-item missed">' +
+        '<p class="qz-review-q">' + esc(q ? q.text : (a.qid || '')) + '</p>' +
+        '<p class="qz-review-line bad"><span>' + L('quiz.review.yourAnswer') + '</span> ' + esc(answerText(q, a.chosen)) + '</p>' +
+        '<p class="qz-review-line good"><span>' + L('quiz.review.rightAnswer') + '</span> ' + esc(answerText(q, a.answer)) + '</p>' +
+        '</div>';
+    }).join('');
+  }
+  function renderResult(rec) {
+    if (!rec) { closeQuizOverlay(); return; }
+    lastResult = rec; quizOverlay = 'result';
+    const missed = rec.answers.filter(a => !a.ok);
+    $('#modalRoot').innerHTML = '<div class="overlay" data-act="quizOverlay"><div class="sheet qz-sheet" role="dialog" aria-modal="true" aria-label="' + L('quiz.result.title') + '">' +
+      '<div class="sheet-head"><h2>' + L('quiz.result.title') + '</h2>' +
+      '<button class="icon-btn" data-act="closeQuizOverlay" aria-label="' + L('action.close') + '">' + ic.x + '</button></div>' +
+      '<div class="sheet-body"><div class="qz-result-hero' + (rec.pass ? ' pass' : ' fail') + '">' +
+      '<span class="eyebrow">' + (rec.pass ? L('quiz.result.pass') : L('quiz.result.fail')) + '</span>' +
+      '<div class="qz-result-score">' + esc(rec.grade) + '</div>' +
+      '<p class="muted">' + L('quiz.result.score', { score: num(rec.score, 2), max: formatScaleMax(rec.scale || S.settings.scale), percent: rec.percent }) + '</p>' +
+      '</div><div class="qz-stats">' +
+      '<span class="badge good">' + L('quiz.result.correct') + ': ' + rec.correct + '</span>' +
+      '<span class="badge">' + L('quiz.result.wrong') + ': ' + rec.wrong + '</span>' +
+      '<span class="badge">' + L('quiz.exam.time') + ': ' + rec.minutes + ' ' + L('unit.minute') + '</span></div>' +
+      (missed.length
+        ? '<h3 class="qz-subtitle">' + L('quiz.result.missed') + '</h3><div class="qz-review-list">' + missedHTML(rec) + '</div>'
+        : '<p class="ok-msg">' + L('quiz.result.perfect') + '</p>') +
+      '</div><div class="sheet-foot"><button class="btn ghost" data-act="examHistory" data-id="' + rec.sid + '">' + L('action.examHistory') + '</button>' +
+      '<div class="sheet-actions">' +
+      (missed.length ? '<button class="btn sm" data-act="qzRetryMissed">' + L('action.retryMissed') + '</button>' : '') +
+      '<button class="btn sm pri" data-act="closeQuizOverlay">' + L('action.close') + '</button></div></div></div></div>';
+  }
+
+  function renderHistory(sid) {
+    const s = sid && sub(S, sid) ? sub(S, sid) : null;
+    quizHistorySid = s ? s.id : null; quizOverlay = 'history';
+    const list = (S.quizHistory || []).filter(r => !s || r.sid === s.id).slice().reverse();
+    const rows = list.length ? list.map(r => {
+      const when = r.at ? fmtShortDate(parseYmd(r.at.slice(0, 10))) : '';
+      return '<details class="qz-history-row"><summary>' +
+        '<span class="qz-history-main"><strong>' + esc(r.grade) + '</strong>' +
+        '<span class="qz-history-meta">' + esc(when) + ' · ' + r.minutes + ' ' + L('unit.minute') + ' · ' + r.correct + '/' + r.total + '</span></span>' +
+        '<span class="badge' + (r.pass ? ' good' : '') + '">' + r.percent + '%</span></summary>' +
+        '<div class="qz-history-body">' + (missedHTML(r) || '<p class="muted">' + L('quiz.result.perfect') + '</p>') + '</div></details>';
+    }).join('') : '<p class="muted unit-empty">' + L('quiz.history.empty') + '</p>';
+    $('#modalRoot').innerHTML = '<div class="overlay" data-act="quizOverlay"><div class="sheet qz-sheet" role="dialog" aria-modal="true" aria-label="' + L('quiz.history.title') + '">' +
+      '<div class="sheet-head"><h2>' + L('quiz.history.title') + (s ? ' · ' + esc(s.name) : '') + '</h2>' +
+      '<button class="icon-btn" data-act="closeQuizOverlay" aria-label="' + L('action.close') + '">' + ic.x + '</button></div>' +
+      '<div class="sheet-body"><p class="muted curr-intro">' + L('quiz.history.sub') + '</p><div class="qz-list">' + rows + '</div></div>' +
+      '<div class="sheet-foot"><span></span><div class="sheet-actions">' +
+      '<button class="btn sm pri" data-act="closeQuizOverlay">' + L('action.close') + '</button></div></div></div></div>';
+  }
+
+  function rerenderQuizOverlay() {
+    const kind = quizOverlay;
+    if (!kind) return;
+    if (kind === 'bank') renderBank(quizBankSid);
+    else if (kind === 'history') renderHistory(quizHistorySid);
+    else if (kind === 'exam') renderExam();
+    else if (kind === 'result') renderResult(lastResult);
+  }
+
   function manualModal(sid) {
     openModal(L('modal.time.title'),
       '<label class="field"><span>' + L('modal.block.subject') + '</span><select name="sid">' + subOpts(sid) + '</select></label>' +
@@ -1730,6 +2146,30 @@
     editGrade(el) { gradeModal(el.dataset.id); },
     newCard() { if (needSubject()) cardModal(); },
     editCard(el) { cardModal(el.dataset.id); },
+    questionBank(el) { renderBank(el.dataset.id); },
+    newQuestion(el) { questionModal(null, el.dataset.id); },
+    generateFromCards(el) { importFromCards(el.dataset.id || quizBankSid); },
+    editQuestion(el) { questionModal(el.dataset.id); },
+    deleteQuestion(el) {
+      const q = quizById(el.dataset.id);
+      const owner = q ? q.sid : quizBankSid;
+      S.questions = (S.questions || []).filter(x => x.id !== el.dataset.id);
+      save(S); renderView(); renderBank(owner);
+      toast(L('quiz.bank.deleted'));
+    },
+    mockExam(el) { setupModal(el.dataset.id || null); },
+    examHistory(el) { renderHistory(el.dataset.id || null); },
+    closeQuizOverlay() { closeQuizOverlay(); },
+    quizOverlay(el, e) { if (e.target === el) closeQuizOverlay(); },
+    qzPrev() { if (!exam || !exam.index) return; readExamChoice(); exam.index--; renderExam(); },
+    qzNext() { if (!exam || exam.index + 1 >= exam.total) return; readExamChoice(); exam.index++; renderExam(); },
+    qzFinish() { if (exam) finishExam(false); },
+    qzRetryMissed() {
+      if (!lastResult) return;
+      const ids = lastResult.answers.filter(a => !a.ok).map(a => a.qid);
+      const pool = ids.map(quizById).filter(Boolean);
+      if (pool.length) startExam(lastResult.sid, lastResult.unitId, lastResult.minutes, pool, pool.length);
+    },
     cardFilter(el) { S.ui.cardSid = el.dataset.sid || null; save(S); renderView(); },
     reviewCards(el) {
       const ids = dueCards(S, el.dataset.sid || null).map(c => c.id);
@@ -1775,6 +2215,7 @@
       resetTimer(); const ui = S.ui, settings = S.settings;
       S = defaults(); S.ui = ui; S.settings = settings; S.timer.status = 'idle';
       S.ui.cardSid = null; S.ui.recoverSeen = []; resetCardSession();
+      closeQuizOverlay(); quizBankSid = null; quizHistorySid = null;
       closeTimerPanel(); afterChange();
     },
     resetAll() {
@@ -1785,6 +2226,7 @@
       S.ui.timerOpen = false; S.ui.min = false; S.ui.pos = null;
       try { localStorage.removeItem(SFS.LEGACY_KEY); } catch (e) {}
       closedG.clear(); unitDraft = null; resetCardSession();
+      closeQuizOverlay(); quizBankSid = null; quizHistorySid = null;
       save(S); renderAll();
       toast(L('backup.resetAllDone'));
     },
@@ -1829,6 +2271,10 @@
       const k = t.dataset.pomo; const v = clamp(Math.round(fnum(t.value)) || 1, 1, 180);
       S.settings.pomo[k] = v; t.value = v; save(S); updateWidgetTime();
     }
+    else if (t.name === 'qzAns' && exam) {
+      readExamChoice();
+      $$('#modalRoot .qz-option').forEach(label => label.classList.toggle('picked', label.contains(t)));
+    }
   });
   document.addEventListener('toggle', (e) => {
     const d = e.target;
@@ -1843,10 +2289,12 @@
   I.onChange(() => {
     if (!S) return;
     if (SFS.localizeSample && SFS.localizeSample(S)) save(S);
+    resetAutoQuizzes();
     renderAll();
+    rerenderQuizOverlay();
   });
 
-  const SW_VERSION = 'studyflow-v1.2.0';
+  const SW_VERSION = 'studyflow-v1.3.2';
   let reloading = false;
 
   /* Pregunta al worker activo su versión. Un worker anterior no entiende el
@@ -1951,6 +2399,21 @@
         if (JSON.stringify(fresh) === JSON.stringify(S)) return;
         S = fresh;
         renderAll();
+      }).then(function () {
+        /* Los stores dedicados ('questions' y 'quizHistory') son un respaldo
+           del banco y del historial por si el sobre 'state' quedó desfasado. */
+        if (!SFS.listQuizData) return;
+        return SFS.listQuizData().then(function (d) {
+          if (!d) return;
+          let changed = false;
+          if ((!S.questions || !S.questions.length) && d.questions && d.questions.length) {
+            S.questions = d.questions; changed = true;
+          }
+          if ((!S.quizHistory || !S.quizHistory.length) && d.quizHistory && d.quizHistory.length) {
+            S.quizHistory = d.quizHistory; changed = true;
+          }
+          if (changed) { save(S); renderAll(); }
+        });
       }).catch(function () {});
       if (T().status === 'running') wake(true);
       setInterval(tick, 1000);

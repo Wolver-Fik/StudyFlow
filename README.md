@@ -9,18 +9,22 @@
 
 **StudyFlow** is a calm, editorial-style study planner that runs entirely in your browser. Plan your week, log study time, keep an eye on exams and understand your grades — no account, no server, no tracking.
 
+**Version:** `studyflow-v1.3.0`
+
 ### Features
 
 - **Subjects** with weekly hour goals and a syllabus progress slider.
 - **Weekly schedule** with classes and study blocks, plus a per-day agenda.
 - **Exams & deadlines** with live countdowns (days, hours and minutes).
 - **Flashcards with spaced repetition** — build subject-specific decks and review cards on an intelligent schedule.
+- **Question bank & timed mock exams** — create four-option multiple-choice questions (optionally linked to a unit), shuffle them into a 10/20/30-minute mock exam, get an instant grade on your configured scale and review every miss.
+- **Mastery by unit / topic** — a per-unit indicator combining completed syllabus tasks, flashcard mastery and mock-exam accuracy.
 - **Smart recovery of lost sessions** — restore sessions interrupted by a reload or a closed tab without losing tracked time.
 - **Indicative exam readiness** — a guidance indicator that suggests how prepared you are based on syllabus coverage and study time.
 - **Grades** with configurable numeric or A–F scales, weights and a dynamic "average needed" calculation.
 - **Focus timer** with Pomodoro and free-stopwatch modes, draggable and minimizable, with automatic time logging.
 - **14-day chart** of study time, colored by subject.
-- **Backup & restore** as JSON or CSV, entirely local.
+- **Backup & restore** as JSON or CSV, entirely local. The question bank, mock-exam history and mastery data are included in JSON exports and round-trip through validated imports.
 - **Offline PWA**: installable on desktop and mobile, works without a network after the first visit.
 - **8 languages** with automatic detection and a selector in the header: English, Español, Português, Français, Italiano, Deutsch, Русский and 日本語.
 
@@ -63,18 +67,22 @@ Copyright (c) 2026 Wolver-Fik. Licensed under the [PolyForm Noncommercial Licens
 
 **StudyFlow** es un planificador de estudio de estilo editorial que funciona por completo en tu navegador. Planificá la semana, registrá tu tiempo de estudio, seguí los exámenes y entendé tus notas: sin cuenta, sin servidor, sin rastreo.
 
+**Versión:** `studyflow-v1.3.0`
+
 ### Funciones
 
 - **Materias** con objetivo semanal de horas y barra de avance del temario.
 - **Horario semanal** con clases y bloques de estudio, y una agenda por día.
 - **Exámenes y entregas** con cuenta regresiva en vivo (días, horas y minutos).
 - **Tarjetas de memoria (flashcards) con repetición espaciada** — creá mazos por materia y repasá las tarjetas con una programación inteligente.
+- **Banco de preguntas y simulacros cronometrados** — creá preguntas de opción múltiple con cuatro alternativas (opcionalmente ligadas a una unidad), mezclalas en un simulacro de 10/20/30 minutos, obtené una nota automática en tu escala configurada y repasá cada fallo.
+- **Dominio por unidad / tema** — un indicador por unidad que combina tareas del temario completadas, dominio de flashcards y aciertos en simulacros.
 - **Recuperación inteligente de sesiones perdidas** — recuperá sesiones interrumpidas por una recarga o una pestaña cerrada sin perder el tiempo registrado.
 - **Indicador orientativo de preparación para exámenes** — una guía que sugiere qué tan preparado estás según el temario cubierto y el tiempo estudiado.
 - **Notas** con escalas numéricas o A–F configurables, pesos y un cálculo dinámico del promedio necesario para aprobar.
 - **Temporizador de enfoque** con Pomodoro y cronómetro libre, arrastrable y minimizable, que registra el tiempo automáticamente.
 - **Gráfico de 14 días** del tiempo estudiado, coloreado por materia.
-- **Respaldo y restauración** en JSON o CSV, completamente local.
+- **Respaldo y restauración** en JSON o CSV, completamente local. El banco de preguntas, el historial de simulacros y los datos de dominio se incluyen en la exportación JSON y se restauran con validación.
 - **PWA sin conexión**: se instala en escritorio y móvil, y funciona sin red después de la primera visita.
 - **8 idiomas** con detección automática y selector en el encabezado: English, Español, Português, Français, Italiano, Deutsch, Русский y 日本語.
 
