@@ -185,6 +185,29 @@
   let dbPromise = null, idbReady = false, idbFailed = false;
   let initPromise = null, writeChain = Promise.resolve(), memoryBackup = null;
 
+  /* IndexedDB es la única fuente de verdad; `memoryState` es la copia en
+     memoria que consume la API síncrona. */
+  let memoryState = null;
+  const STORAGE_ERROR_MESSAGE = 'Error al guardar los datos en este dispositivo. Exporta un respaldo JSON por seguridad.';
+  let storageErrorHandler = null, lastStorageError = null, storageErrorActive = false;
+  function emitStorageError(err, origin) {
+    if (storageErrorActive) return;
+    storageErrorActive = true;
+    lastStorageError = { message: STORAGE_ERROR_MESSAGE, error: err || null, origin: origin || '' };
+    try { if (typeof storageErrorHandler === 'function') storageErrorHandler(lastStorageError); } catch (e) {}
+    try {
+      window.dispatchEvent(new CustomEvent('onStorageError', { detail: lastStorageError }));
+    } catch (e) {
+      try {
+        const ev = document.createEvent('CustomEvent');
+        ev.initCustomEvent('onStorageError', false, false, lastStorageError);
+        window.dispatchEvent(ev);
+      } catch (e2) {}
+    }
+  }
+  function clearStorageError() { storageErrorActive = false; lastStorageError = null; }
+  function persistStatus() { return !lastStorageError && !idbFailed; }
+
   function idbOpen() {
     if (dbPromise) return dbPromise;
     dbPromise = new Promise(function (resolve, reject) {
@@ -239,7 +262,7 @@
     const sq = JSON.stringify(qs), sh = JSON.stringify(hs);
     if (!force && sq === quizMirrorSig.questions && sh === quizMirrorSig.history) return Promise.resolve();
     quizMirrorSig = { questions: sq, history: sh };
-    quizWriteChain = quizWriteChain.then(function () {
+    const attempt = quizWriteChain.then(function () {
       return idbOpen().then(function (db) {
         return new Promise(function (resolve, reject) {
           const tx = db.transaction([STORE_QUESTIONS, STORE_QUIZZES], 'readwrite');
@@ -254,51 +277,73 @@
           tx.onabort = function () { reject(tx.error || new Error('Transacción abortada')); };
         });
       });
-    }).catch(function () { idbFailed = true; });
-    return quizWriteChain;
+    });
+    quizWriteChain = attempt.catch(function () {});
+    return attempt.then(function () {
+      clearStorageError();
+    }, function (e) {
+      idbFailed = true;
+      emitStorageError(e, 'IndexedDB (banco/historial)');
+    });
   }
   function listQuizData() {
     return Promise.all([idbGetAll(STORE_QUESTIONS), idbGetAll(STORE_QUIZZES)])
       .then(function (r) { return { questions: r[0] || [], quizHistory: r[1] || [] }; })
       .catch(function () { return { questions: [], quizHistory: [] }; });
   }
+  const LIGHT_KEYS = ['studyflow-lang'];
+  const HEAVY_KEYS = [KEY, LEGACY_KEY];
+
+  /* localStorage solo conserva preferencias ligeras; el estado completo
+     reside en IndexedDB y en `memoryState` mientras la app está abierta. */
   function localSnapshot() {
     const snap = {};
-    try { MIRROR_KEYS.forEach(function (k) { const v = localStorage.getItem(k); if (v !== null) snap[k] = v; }); } catch (e) {}
+    try { LIGHT_KEYS.forEach(function (k) { const v = localStorage.getItem(k); if (v !== null) snap[k] = v; }); } catch (e) {}
     return snap;
   }
   function restoreSnapshot(snap) {
-    try {
-      MIRROR_KEYS.forEach(function (k) {
-        if (Object.prototype.hasOwnProperty.call(snap, k)) localStorage.setItem(k, snap[k]);
-        else localStorage.removeItem(k);
-      });
-    } catch (e) {}
+    try { LIGHT_KEYS.forEach(function (k) { if (Object.prototype.hasOwnProperty.call(snap, k)) localStorage.setItem(k, snap[k]); }); } catch (e) {}
+  }
+  function pruneLocalState() {
+    try { HEAVY_KEYS.forEach(function (k) { localStorage.removeItem(k); }); } catch (e) {}
   }
   function writeIDB(data) {
-    writeChain = writeChain.then(function () {
+    const attempt = writeChain.then(function () {
       return idbPut(STORE_STATE, STATE_KEY, {
         schemaVersion: SCHEMA_VERSION, app: 'studyflow', data: data,
         localStorage: localSnapshot(), updatedAt: new Date().toISOString()
       });
-    }).catch(function () { idbFailed = true; });
-    return writeChain;
+    });
+    writeChain = attempt.catch(function () {});
+    return attempt.then(function () {
+      clearStorageError(); storageOk = true;
+    }, function (e) {
+      idbFailed = true; storageOk = false;
+      emitStorageError(e, 'IndexedDB');
+    });
   }
   function initIDB() {
     if (initPromise) return initPromise;
     initPromise = idbOpen().then(function () { return idbGet(STORE_STATE, STATE_KEY); })
       .then(function (rec) {
-        const local = localSnapshot();
-        const rawLocal = local[KEY] || local[LEGACY_KEY];
-        /* Sin estado local tampoco hay nada que migrar: no escribir un
-           envelope con data:null que luego se confundiria con un backup. */
-        if (!rec) { if (rawLocal) writeIDB(JSON.parse(rawLocal)); return; }
+        if (!rec) {
+          /* Migración única: solo si IndexedDB está vacío se lee localStorage. */
+          try {
+            const raw = localStorage.getItem(KEY) || localStorage.getItem(LEGACY_KEY);
+            if (raw) {
+              const parsed = JSON.parse(raw);
+              const data = (parsed && parsed.app === 'studyflow' && parsed.data) ? parsed.data : parsed;
+              memoryState = data;
+              return writeIDB(data).then(function () { pruneLocalState(); });
+            }
+          } catch (e) {}
+          pruneLocalState();
+          return;
+        }
         const remote = (rec.schemaVersion && rec.data) ? rec.data : rec;
-        if (!rawLocal) {
-          try { localStorage.setItem(KEY, JSON.stringify(remote)); } catch (e) {}
-          writeIDB(remote);
-        } else writeIDB(migrate(JSON.parse(rawLocal)));
-      }).catch(function () { idbFailed = true; });
+        memoryState = remote;
+        pruneLocalState();
+      }).catch(function (e) { idbFailed = true; emitStorageError(e, 'IndexedDB (init)'); });
     return initPromise;
   }
   function whenReady() { return initIDB(); }
@@ -364,7 +409,8 @@
   };
 
   let storageOk = true;
-  try { localStorage.setItem('__sf_test', '1'); localStorage.removeItem('__sf_test'); } catch (e) { storageOk = false; }
+  /* No se prueba localStorage para decidir si el guardado funciona: la fuente
+     de verdad es IndexedDB. */
   /* Se activa cuando migrate() rellena las flashcards vacías del modo demo.
      load() lo usa para guardar el estado restaurado en el acto. */
   let demoCardsInjected = false;
@@ -684,15 +730,18 @@
   }
 
   function load() {
-    /* Migracion automatica localStorage -> IndexedDB, sin perder registros. */
+    /* Migracion automatica localStorage -> IndexedDB (una sola vez). */
     initIDB();
     if (!storageOk) return null;
     try {
-      let raw = localStorage.getItem(KEY);
-      if (!raw) raw = localStorage.getItem(LEGACY_KEY);
-      if (!raw) return null;
-      let parsed = JSON.parse(raw);
-      if (parsed && parsed.app === 'studyflow' && parsed.data) parsed = parsed.data;
+      let parsed = memoryState;
+      if (!parsed && !initPromise) {
+        let raw = localStorage.getItem(KEY);
+        if (!raw) raw = localStorage.getItem(LEGACY_KEY);
+        if (raw) parsed = JSON.parse(raw);
+      }
+      if (!parsed) return null;
+      if (parsed.app === 'studyflow' && parsed.data) parsed = parsed.data;
       const state = migrate(parsed);
       /* Persiste apenas se inyectan las tarjetas demo: así mantienen sus ids
          e historial y no se regeneran en cada arranque. */
@@ -702,14 +751,12 @@
   }
 
   function save(state) {
-    if (!storageOk) return false;
     state.schemaVersion = SCHEMA_VERSION;
-    let ok;
-    try { localStorage.setItem(KEY, JSON.stringify(state)); ok = true; }
-    catch (e) { storageOk = false; ok = false; }
+    memoryState = state;
+    /* Escritura principal directa en IndexedDB; localStorage no participa. */
     writeIDB(state);
     mirrorQuizData(state);
-    return ok;
+    return persistStatus();
   }
 
   /* Seis tarjetas traducibles vinculadas a las materias de ejemplo. Se usan
@@ -1341,6 +1388,12 @@
     /* Etapa 1: almacenamiento durable y sin limite de 5 MB */
     DB_NAME, SCHEMA_VERSION, whenReady,
     isIndexedDBReady: () => idbReady && !idbFailed,
+    /* Fallo real de persistencia: callback y evento `onStorageError`. */
+    STORAGE_ERROR_MESSAGE,
+    get onStorageError() { return storageErrorHandler; },
+    set onStorageError(fn) { storageErrorHandler = typeof fn === 'function' ? fn : null; },
+    lastStorageError: () => lastStorageError,
+    isStorageHealthy: persistStatus,
     putFile, getFile, listFiles, deleteFile,
     /* Etapa 2: espejo dedicado en IndexedDB (banco + historial) */
     STORE_QUESTIONS, STORE_QUIZZES, mirrorQuizData, listQuizData

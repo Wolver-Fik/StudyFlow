@@ -474,6 +474,26 @@
       .filter(Boolean).join(' · ');
   }
 
+  /* Fallo real de guardado: storage.js emite `onStorageError` cuando fallan
+     IndexedDB y el almacenamiento alternativo. El aviso es persistente. */
+  (function () {
+    const TEXT = 'Error al guardar los datos en este dispositivo. Exporta un respaldo JSON por seguridad.';
+    function showStorageError(ev) {
+      let el = document.getElementById('storageErrorBanner');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'storageErrorBanner'; el.setAttribute('role', 'alert');
+        el.style.cssText = 'position:fixed;left:50%;top:8px;transform:translateX(-50%);max-width:min(92vw,680px);z-index:2147483647;background:#8b1e1e;color:#fff;padding:12px 16px;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.35);font:600 14px/1.4 system-ui,sans-serif;text-align:center';
+        (document.body || document.documentElement).appendChild(el);
+      }
+      el.textContent = (ev && ev.detail && ev.detail.message) || TEXT;
+    }
+    window.addEventListener('onStorageError', showStorageError);
+    if (SFS && SFS.lastStorageError && SFS.lastStorageError()) {
+      showStorageError({ detail: SFS.lastStorageError() });
+    }
+  })();
+
   function toast(message) {
     let el = $('#sfToast');
     if (!el) {
@@ -2436,6 +2456,12 @@
     }
   }
 
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
-  else init();
+  /* IndexedDB es la fuente de verdad: init() espera a la migración inicial
+     (solo si la base estaba vacía) antes de leer el estado. */
+  function startInit() {
+    if (SFS && SFS.whenReady) SFS.whenReady().then(init, init);
+    else init();
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', startInit);
+  else startInit();
 })();
