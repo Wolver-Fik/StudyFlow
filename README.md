@@ -18,6 +18,8 @@
 - **Exams & deadlines** with live countdowns (days, hours and minutes).
 - **Flashcards with spaced repetition** — build subject-specific decks and review cards on an intelligent schedule.
 - **Question bank & timed mock exams** — create four-option multiple-choice questions (optionally linked to a unit), shuffle them into a 10/20/30-minute mock exam, get an instant grade on your configured scale and review every miss.
+- **Stage 2 backup integrity** — JSON exports include `schemaVersion`, `appId`, export date, question bank and mock-exam history; validation rejects another app's file before replacing anything.
+- **Lightweight lists** — flashcards, question bank and exam history render in capped batches with a "show more" expander for smooth mobile scrolling.
 - **Mastery by unit / topic** — a per-unit indicator combining completed syllabus tasks, flashcard mastery and mock-exam accuracy.
 - **Smart recovery of lost sessions** — restore sessions interrupted by a reload or a closed tab without losing tracked time.
 - **Indicative exam readiness** — a guidance indicator that suggests how prepared you are based on syllabus coverage and study time.
@@ -76,6 +78,8 @@ Copyright (c) 2026 Wolver-Fik. Licensed under the [PolyForm Noncommercial Licens
 - **Exámenes y entregas** con cuenta regresiva en vivo (días, horas y minutos).
 - **Tarjetas de memoria (flashcards) con repetición espaciada** — creá mazos por materia y repasá las tarjetas con una programación inteligente.
 - **Banco de preguntas y simulacros cronometrados** — creá preguntas de opción múltiple con cuatro alternativas (opcionalmente ligadas a una unidad), mezclalas en un simulacro de 10/20/30 minutos, obtené una nota automática en tu escala configurada y repasá cada fallo.
+- **Integridad de respaldo (Etapa 2)** — el JSON incluye `schemaVersion`, `appId`, fecha de exportación, banco de preguntas e historial de simulacros; la validación rechaza archivos de otra app antes de reemplazar nada.
+- **Listas ligeras** — flashcards, banco de preguntas e historial de exámenes se renderizan por tandas con un desplegable «Ver más» para una navegación fluida en móvil.
 - **Dominio por unidad / tema** — un indicador por unidad que combina tareas del temario completadas, dominio de flashcards y aciertos en simulacros.
 - **Recuperación inteligente de sesiones perdidas** — recuperá sesiones interrumpidas por una recarga o una pestaña cerrada sin perder el tiempo registrado.
 - **Indicador orientativo de preparación para exámenes** — una guía que sugiere qué tan preparado estás según el temario cubierto y el tiempo estudiado.

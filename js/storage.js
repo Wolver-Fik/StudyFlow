@@ -1218,7 +1218,9 @@
   function exportJSON(state) {
     return JSON.stringify({
       app: 'StudyFlow',
+      appId: 'studyflow',
       schemaVersion: SCHEMA_VERSION,
+      exportDate: new Date().toISOString().slice(0, 10),
       exportedAt: new Date().toISOString(),
       data: state
     }, null, 2);
@@ -1230,6 +1232,9 @@
       return { ok: false, msgText: 'El archivo no contiene un respaldo válido.' };
     }
     if (o.app && String(o.app).toLowerCase() !== 'studyflow') {
+      return { ok: false, msgText: 'Este respaldo pertenece a otra aplicación y no se importará.' };
+    }
+    if (o.appId && String(o.appId).toLowerCase() !== 'studyflow') {
       return { ok: false, msgText: 'Este respaldo pertenece a otra aplicación y no se importará.' };
     }
     const sv = o.schemaVersion == null ? 1 : Number(o.schemaVersion);

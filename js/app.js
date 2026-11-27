@@ -6,6 +6,9 @@
   const I = window.StudyI18n;
   const L = (key, vars) => I.t(key, vars);
   const C = (base, n, vars) => I.count(base, n, vars);
+  /* Etapa 3: topes de renderizado y etiqueta local para "Ver más". */
+  const MORE_LABELS = { es: 'Ver más', en: 'Show more', pt: 'Ver mais', fr: 'Voir plus', it: 'Mostra altro', de: 'Mehr anzeigen', ru: 'Показать ещё', ja: 'もっと見る' };
+  const moreLabel = n => (MORE_LABELS[I.current && I.current()] || MORE_LABELS.en) + ' (' + n + ')';
   const {
     COLORS, SCALE_PRESETS,
     $, $$, esc, uid, pad, ymd, parseYmd, todayKey, addDays, dayIdx, clamp, fnum, num,
@@ -1064,8 +1067,11 @@
       '<span class="badge">' + L('fc.mastered') + ': ' + st.mastered + '</span></div>';
     const toolbar = '<div class="section-toolbar"><button class="btn sm pri" data-act="newCard">' + L('action.newCard') + '</button>' +
       '<button class="btn sm" data-act="reviewCards" data-sid="' + (sid || '') + '">' + L('action.review') + '</button>' + cardDueBadge() + '</div>';
+    const firstCards = list.slice(0, 60).map(cardRow).join('');
+    const restCards = list.slice(60).map(cardRow).join('');
     const cards = list.length
-      ? '<div class="cards fc-grid">' + list.map(cardRow).join('') + '</div>'
+      ? '<div class="cards fc-grid">' + firstCards + '</div>' +
+        (restCards ? '<details class="show-more"><summary class="btn sm">' + esc(moreLabel(list.length - 60)) + '</summary><div class="cards fc-grid">' + restCards + '</div></details>' : '')
       : '<div class="empty"><p>' + L('fc.empty') + '</p><button class="btn pri" data-act="newCard">' + L('action.newCard') + '</button></div>';
     return '<section class="section"><div class="section-head"><h2>' + L('section.flashcards') + '</h2>' +
       '<span class="muted" style="font-size:13px">' + L('fc.subtitle') + '</span></div>' +
@@ -1335,7 +1341,7 @@
     if (!s) { closeQuizOverlay(); return; }
     quizBankSid = sid; quizOverlay = 'bank';
     const all = (S.questions || []).filter(q => q.sid === sid);
-    const rows = all.length ? all.map(q => {
+    const cards = all.map(q => {
       const u = unitsBy(S, sid).find(x => x.id === q.unitId);
       return '<div class="qz-row' + (q.demoKey ? ' is-demo' : '') + '">' +
         '<div class="qz-row-main"><span class="qz-row-text">' + esc(q.text) + '</span>' +
@@ -1344,7 +1350,10 @@
         '<button class="icon-btn" data-act="editQuestion" data-id="' + q.id + '" aria-label="' + L('action.edit') + '">' + ic.sliders + '</button>' +
         '<button class="icon-btn" data-act="deleteQuestion" data-id="' + q.id + '" data-confirm="' + L('quiz.bank.deleteConfirm') + '" aria-label="' + L('action.delete') + '">' + ic.trash + '</button>' +
         '</div></div>';
-    }).join('') : '<p class="muted unit-empty">' + L('quiz.bank.empty') + '</p>';
+    });
+    const first = cards.slice(0, 50).join('');
+    const rest = cards.slice(50).join('');
+    const rows = cards.length ? first + (rest ? '<details class="show-more"><summary class="btn sm">' + esc(moreLabel(cards.length - 50)) + '</summary>' + rest + '</details>' : '') : '<p class="muted unit-empty">' + L('quiz.bank.empty') + '</p>';
     $('#modalRoot').innerHTML = '<div class="overlay" data-act="quizOverlay">' +
       '<div class="sheet" role="dialog" aria-modal="true" aria-label="' + esc(s.name + ' · ' + L('action.questionBank')) + '">' +
       '<div class="sheet-head"><h2>' + esc(L('action.questionBank') + ' · ' + s.name) + '</h2>' +
@@ -1585,14 +1594,17 @@
     const s = sid && sub(S, sid) ? sub(S, sid) : null;
     quizHistorySid = s ? s.id : null; quizOverlay = 'history';
     const list = (S.quizHistory || []).filter(r => !s || r.sid === s.id).slice().reverse();
-    const rows = list.length ? list.map(r => {
+    const cards = list.map(r => {
       const when = r.at ? fmtShortDate(parseYmd(r.at.slice(0, 10))) : '';
       return '<details class="qz-history-row"><summary>' +
         '<span class="qz-history-main"><strong>' + esc(r.grade) + '</strong>' +
         '<span class="qz-history-meta">' + esc(when) + ' · ' + r.minutes + ' ' + L('unit.minute') + ' · ' + r.correct + '/' + r.total + '</span></span>' +
         '<span class="badge' + (r.pass ? ' good' : '') + '">' + r.percent + '%</span></summary>' +
         '<div class="qz-history-body">' + (missedHTML(r) || '<p class="muted">' + L('quiz.result.perfect') + '</p>') + '</div></details>';
-    }).join('') : '<p class="muted unit-empty">' + L('quiz.history.empty') + '</p>';
+    });
+    const first = cards.slice(0, 50).join('');
+    const rest = cards.slice(50).join('');
+    const rows = cards.length ? first + (rest ? '<details class="show-more"><summary class="btn sm">' + esc(moreLabel(cards.length - 50)) + '</summary>' + rest + '</details>' : '') : '<p class="muted unit-empty">' + L('quiz.history.empty') + '</p>';
     $('#modalRoot').innerHTML = '<div class="overlay" data-act="quizOverlay"><div class="sheet qz-sheet" role="dialog" aria-modal="true" aria-label="' + L('quiz.history.title') + '">' +
       '<div class="sheet-head"><h2>' + L('quiz.history.title') + (s ? ' · ' + esc(s.name) : '') + '</h2>' +
       '<button class="icon-btn" data-act="closeQuizOverlay" aria-label="' + L('action.close') + '">' + ic.x + '</button></div>' +
