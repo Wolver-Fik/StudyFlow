@@ -2,6 +2,13 @@
 (function () {
   'use strict';
   window.StudyI18n.register('de', {
+    'install.button': 'App installieren',
+    'install.guideTitle': 'Auf iPhone oder iPad installieren',
+    'install.step1': 'Tippen Sie in der Leiste von Safari auf das Symbol zum Teilen',
+    'install.step2': 'Wählen Sie „Zum Home-Bildschirm hinzufügen“',
+    'install.close': 'Schließen',
+    'install.buttonAria': 'App auf diesem Gerät installieren',
+    'install.closeAria': 'Installationsanleitung schließen',
     'meta.title': 'StudyFlow',
     'header.language': 'Sprache',
     'header.backup': 'Sicherung',

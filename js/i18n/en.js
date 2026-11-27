@@ -2,6 +2,13 @@
 (function () {
   'use strict';
   window.StudyI18n.register('en', {
+    'install.button': 'Install app',
+    'install.guideTitle': 'Install on iPhone or iPad',
+    'install.step1': 'Tap the Share icon in Safari’s toolbar',
+    'install.step2': 'Choose “Add to Home Screen”',
+    'install.close': 'Close',
+    'install.buttonAria': 'Install app on this device',
+    'install.closeAria': 'Close installation guide',
     'meta.title': 'StudyFlow',
     'header.language': 'Language',
     'header.backup': 'Backup',

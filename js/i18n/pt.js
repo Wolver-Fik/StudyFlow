@@ -2,6 +2,13 @@
 (function () {
   'use strict';
   window.StudyI18n.register('pt', {
+    'install.button': 'Instalar app',
+    'install.guideTitle': 'Instalar no iPhone ou iPad',
+    'install.step1': 'Toque no ícone Compartilhar na barra do Safari',
+    'install.step2': 'Escolha «Adicionar à Tela de Início»',
+    'install.close': 'Fechar',
+    'install.buttonAria': 'Instalar app neste dispositivo',
+    'install.closeAria': 'Fechar guia de instalação',
     'meta.title': 'StudyFlow',
     'header.language': 'Idioma',
     'header.backup': 'Backup',

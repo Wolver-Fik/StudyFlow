@@ -6,7 +6,7 @@
 
   /* Etapa 2: sube la version con cada cambio. activate solo purga CacheStorage;
      nunca borra IndexedDB (studyflow_db) ni localStorage. */
-  var CACHE = 'studyflow-v1.3.2';
+  var CACHE = 'studyflow-v1.3.3';
   var VERSION = CACHE;
   var SCOPE = self.registration.scope;
   function abs(p) { return new URL(p, SCOPE).href; }
@@ -16,7 +16,7 @@
     './js/i18n.js', './js/i18n/i18n.js', './js/i18n/en.js', './js/i18n/es.js',
     './js/i18n/pt.js', './js/i18n/fr.js', './js/i18n/it.js',
     './js/i18n/de.js', './js/i18n/ru.js', './js/i18n/ja.js',
-    './js/storage.js', './js/curricula.js', './js/app.js',
+    './js/storage.js', './js/curricula.js', './js/ios-install.js', './js/app.js',
     './icons/icon.svg', './icons/icon-180.png', './icons/icon-192.png', './icons/icon-512.png'
   ].map(abs);
 
