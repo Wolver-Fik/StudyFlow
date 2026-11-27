@@ -6,7 +6,7 @@
 
   /* Etapa 2: sube la version con cada cambio. activate solo purga CacheStorage;
      nunca borra IndexedDB (studyflow_db) ni localStorage. */
-  var CACHE = 'studyflow-v1.3.3';
+  var CACHE = 'studyflow-v1.3.4';
   var VERSION = CACHE;
   var SCOPE = self.registration.scope;
   function abs(p) { return new URL(p, SCOPE).href; }
@@ -25,7 +25,6 @@
       caches.open(VERSION)
         .then(function (c) { return c.addAll(CORE); })
         .then(function () { return self.skipWaiting(); })
-        .catch(function () { return self.skipWaiting(); })
     );
   });
 
@@ -38,9 +37,11 @@
     );
   });
 
+  /* Devuelve la promesa de escritura para poder pasarla a waitUntil. El clone
+     se toma aquí, antes de que la respuesta se entregue a la página. */
   function put(url, response) {
-    if (!response || !response.ok || response.type === 'opaque') return;
-    caches.open(VERSION).then(function (c) { c.put(url, response.clone()); }).catch(function () {});
+    if (!response || !response.ok || response.type === 'opaque') return Promise.resolve();
+    return caches.open(VERSION).then(function (c) { return c.put(url, response.clone()); });
   }
 
   self.addEventListener('fetch', function (ev) {
@@ -53,30 +54,34 @@
     if (url.origin !== self.location.origin) return;
 
     var isHTML = req.mode === 'navigate' || String(req.headers.get('accept') || '').indexOf('text/html') >= 0;
-    if (isHTML) {
-      ev.respondWith(
-        fetch(req).then(function (res) {
-          put(INDEX, res);
-          return res;
-        }).catch(function () {
-          return caches.match(INDEX).then(function (r) { return r || caches.match(CORE[0]); });
-        })
-      );
-      return;
-    }
+    var cacheWrite = Promise.resolve();
+    var responsePromise;
 
-    ev.respondWith(
-      caches.match(req).then(function (cached) {
+    if (isHTML) {
+      responsePromise = fetch(req).then(function (res) {
+        cacheWrite = put(INDEX, res);
+        return res;
+      }).catch(function () {
+        return caches.match(INDEX).then(function (r) { return r || caches.match(CORE[0]); });
+      });
+    } else {
+      responsePromise = caches.match(req).then(function (cached) {
         if (cached) {
-          fetch(req).then(function (res) { put(req.url, res); }).catch(function () {});
+          cacheWrite = fetch(req).then(function (res) { return put(req.url, res); }).catch(function () {});
           return cached;
         }
         return fetch(req).then(function (res) {
-          put(req.url, res);
+          cacheWrite = put(req.url, res).catch(function () {});
           return res;
         });
-      })
-    );
+      });
+    }
+
+    /* waitUntil se registra durante la descarga del evento (llamarlo dentro de
+       un .then sería demasiado tarde) y mantiene el worker vivo hasta que la
+       escritura en caché termine, sin retrasar la respuesta. */
+    ev.waitUntil(responsePromise.then(function () { return cacheWrite; }).catch(function () {}));
+    ev.respondWith(responsePromise);
   });
 
   self.addEventListener('message', function (ev) {

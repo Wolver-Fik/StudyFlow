@@ -9,7 +9,7 @@
 
 **StudyFlow** is a calm, editorial-style study planner that runs entirely in your browser. Plan your week, log study time, keep an eye on exams and understand your grades — no account, no server, no tracking.
 
-**Version:** `studyflow-v1.3.0`
+**Version:** `studyflow-v1.3.4`
 
 ### Features
 
@@ -47,7 +47,7 @@ index.html              App shell, language selector and PWA links
 manifest.webmanifest    Install metadata and icons
 sw.js                   Network-First service worker
 css/styles.css          Warm editorial theme (#0D0D0D + #E0A96D)
-js/storage.js           State, migrations, sample data and JSON/CSV export
+js/storage.js           State, IndexedDB storage, migrations and JSON/CSV export
 js/app.js               Views, timer, modals and interactions
 js/i18n/i18n.js         Translation core (detect, t, count, num, date)
 js/i18n/<code>.js       Eight language dictionaries
@@ -57,6 +57,10 @@ icons/                  SVG source, Pillow generator and PNG icons
 ### Language notes
 
 Your interface language is detected from the browser on the first visit and then saved in `localStorage`. Content you create (subject names, notes, exam titles) is your own data and is never rewritten when you switch languages. The initial demo content carries an internal i18n key, so subjects, tasks, exams and grades keep translating while you use the demo; as soon as you edit one of them, it becomes your own text and stays fixed.
+
+### Data & storage
+
+IndexedDB (`studyflow_db`) is the primary store for subjects, the weekly schedule, grades, flashcards, attachments, the question bank and mock-exam history. It works offline and is not subject to the 5 MB `localStorage` limit. `localStorage` only keeps lightweight preferences such as the interface language. Clearing site data in your browser deletes `studyflow_db` together with those preferences: the app starts fresh and there is no server-side copy to recover from. Export a JSON backup first if you want to keep your data.
 
 ### License
 
@@ -69,7 +73,7 @@ Copyright (c) 2026 Wolver-Fik. Licensed under the [PolyForm Noncommercial Licens
 
 **StudyFlow** es un planificador de estudio de estilo editorial que funciona por completo en tu navegador. Planificá la semana, registrá tu tiempo de estudio, seguí los exámenes y entendé tus notas: sin cuenta, sin servidor, sin rastreo.
 
-**Versión:** `studyflow-v1.3.0`
+**Versión:** `studyflow-v1.3.4`
 
 ### Funciones
 
@@ -107,7 +111,7 @@ index.html              Estructura, selector de idioma y enlaces PWA
 manifest.webmanifest    Metadatos de instalación e iconos
 sw.js                   Service worker Network-First
 css/styles.css          Tema editorial cálido (#0D0D0D + #E0A96D)
-js/storage.js           Estado, migraciones, datos de ejemplo y exportación JSON/CSV
+js/storage.js           Estado, IndexedDB, migraciones y exportación JSON/CSV
 js/app.js               Vistas, temporizador, modales e interacciones
 js/i18n/i18n.js         Núcleo de traducción (detección, t, count, num, date)
 js/i18n/<code>.js       Ocho diccionarios de idioma
@@ -117,6 +121,10 @@ icons/                  SVG fuente, generador con Pillow e iconos PNG
 ### Notas sobre idiomas
 
 El idioma de la interfaz se detecta del navegador en la primera visita y se guarda en `localStorage`. El contenido que creás (nombres de materias, notas, títulos de exámenes) es tuyo y nunca se reescribe al cambiar de idioma. El contenido de demostración inicial lleva una clave i18n interna: materias, tareas, exámenes y notas siguen traduciéndose mientras uses el demo; en cuanto editás uno de esos textos, pasa a ser tuyo y queda fijo.
+
+### Datos y almacenamiento
+
+IndexedDB (`studyflow_db`) es el almacenamiento principal de materias, horario semanal, notas, flashcards, adjuntos, banco de preguntas e historial de simulacros. Funciona sin conexión y no tiene el límite de 5 MB de `localStorage`. `localStorage` sólo guarda preferencias ligeras como el idioma de la interfaz. Al borrar los datos del sitio en el navegador se eliminan `studyflow_db` y esas preferencias: la app arranca como nueva y no hay copia en un servidor que permita recuperarlos. Exportá un respaldo JSON antes si querés conservar tus datos.
 
 ### Licencia
 

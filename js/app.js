@@ -1109,15 +1109,36 @@
       '<div class="sheet-actions"><button type="button" class="btn ghost" data-act="closeModal">' + L('action.cancel') + '</button><button type="submit" class="btn pri">' + esc(opts.submit || L('action.save')) + '</button></div></div></form></div></div>';
     modal = { onDelete: opts.onDelete, prev: document.activeElement };
     const form = $('#mForm');
+    let submitting = false;
+    const showFormError = (msg) => {
+      if (!msg) return;
+      const el = $('#fErr');
+      if (el) { el.textContent = msg; el.hidden = false; }
+    };
     form.addEventListener('submit', (e) => {
       e.preventDefault();
+      if (submitting) return;
       const fd = new FormData(form);
-      const r = opts.onSubmit ? opts.onSubmit(fd, form) : null;
-      if (r && (r.error || r.cancelled)) {
-        if (r.error) { const el = $('#fErr'); el.textContent = r.error; el.hidden = false; }
+      const current = modal;
+      let r;
+      try { r = opts.onSubmit ? opts.onSubmit(fd, form) : null; }
+      catch (err) { showFormError(err && err.message ? err.message : L('backup.format')); return; }
+      const finish = (result) => {
+        if (modal !== current) return;
+        if (result && result.error) { showFormError(result.error); return; }
+        if (result && result.cancelled) return;
+        closeModal();
+      };
+      /* Los guardados asíncronos (importación) mantienen el modal abierto
+         hasta que la persistencia confirma o informa del error. */
+      if (r && typeof r.then === 'function') {
+        submitting = true;
+        r.then(finish).catch((err) => {
+          if (modal === current) showFormError(err && err.message ? err.message : L('backup.format'));
+        }).then(() => { submitting = false; });
         return;
       }
-      closeModal();
+      finish(r);
     });
     setTimeout(() => { const f = form.querySelector('input:not([type=radio]):not([type=hidden]),select,textarea'); if (f) f.focus(); }, 30);
   }
@@ -1789,17 +1810,37 @@
           try { check = SFS.validateBackup ? SFS.validateBackup(o) : { ok: true, data: o }; }
           catch (e) { return { error: e && e.message ? e.message : L('backup.format') }; }
           if (!check.ok) return { error: check.msgText || L('backup.format') };
+          const importError = 'No se pudo importar el respaldo; tus datos siguen intactos.';
+          const restore = () => {
+            if (safety) {
+              try { S = JSON.parse(safety); } catch (e2) { return; }
+              save(S);
+            }
+            renderAll();
+          };
+          let pending;
           try {
             resetTimer();
             S = SFS.migrate(check.data);
             S.timer.status = 'idle'; S.timer.startedAt = null; S.timer.acc = 0; S.timer.logged = 0;
             closeTimerPanel();
-            afterChange();
-            toast(L('settings.importDone'));
+            ensureTimerSubject();
+            resetAutoQuizzes();
+            /* El modal sigue abierto: no se confirma hasta que IndexedDB
+               confirme también la escritura del banco y del historial. */
+            pending = save(S, { wait: true });
           } catch (e) {
-            if (safety) { S = JSON.parse(safety); save(S); renderAll(); }
-            return { error: 'No se pudo importar el respaldo; tus datos siguen intactos.' };
+            restore();
+            return { error: importError };
           }
+          return Promise.resolve(pending).then(function () {
+            renderAll();
+            toast(L('settings.importDone'));
+            return {};
+          }, function (e) {
+            restore();
+            return { error: importError };
+          });
         }
       });
     const file = $('#imFile');
@@ -2256,11 +2297,24 @@
       wake(false);
       S = defaults();
       S.ui.timerOpen = false; S.ui.min = false; S.ui.pos = null;
-      try { localStorage.removeItem(SFS.LEGACY_KEY); } catch (e) {}
       closedG.clear(); unitDraft = null; resetCardSession();
       closeQuizOverlay(); quizBankSid = null; quizHistorySid = null;
-      save(S); renderAll();
-      toast(L('backup.resetAllDone'));
+      renderAll();
+      /* Vacía state, files, questions y quizHistory, además del localStorage
+         propio, y sólo después guarda el estado limpio por defecto. */
+      if (SFS.clearAllStorage) {
+        SFS.clearAllStorage().then(function () {
+          save(S);
+          toast(L('backup.resetAllDone'));
+        }).catch(function () {
+          save(S);
+          toast(SFS.STORAGE_ERROR_MESSAGE || L('backup.resetAllDone'));
+        });
+      } else {
+        try { localStorage.removeItem(SFS.LEGACY_KEY); } catch (e) {}
+        save(S);
+        toast(L('backup.resetAllDone'));
+      }
     },
     twMin() { S.ui.min = !S.ui.min; S.ui.pos = null; save(S); renderWidget(); revealTimer(); },
     twCfg() { S.ui.cfg = !S.ui.cfg; save(S); renderWidget(); },
@@ -2326,7 +2380,7 @@
     rerenderQuizOverlay();
   });
 
-  const SW_VERSION = 'studyflow-v1.3.2';
+  const SW_VERSION = 'studyflow-v1.3.4';
   let reloading = false;
 
   /* Pregunta al worker activo su versión. Un worker anterior no entiende el

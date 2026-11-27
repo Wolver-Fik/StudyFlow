@@ -184,6 +184,7 @@
   const MIRROR_KEYS = [KEY, LEGACY_KEY, 'studyflow-lang'];
   let dbPromise = null, idbReady = false, idbFailed = false;
   let initPromise = null, writeChain = Promise.resolve(), memoryBackup = null;
+  let lastSavePromise = Promise.resolve();
 
   /* IndexedDB es la única fuente de verdad; `memoryState` es la copia en
      memoria que consume la API síncrona. */
@@ -205,7 +206,9 @@
       } catch (e2) {}
     }
   }
-  function clearStorageError() { storageErrorActive = false; lastStorageError = null; }
+  /* Se llama tras una escritura confirmada: el error queda cerrado y la base
+     vuelve a considerarse usable para la siguiente operación. */
+  function clearStorageError() { storageErrorActive = false; lastStorageError = null; idbFailed = false; }
   function persistStatus() { return !lastStorageError && !idbFailed; }
 
   function idbOpen() {
@@ -224,6 +227,8 @@
       req.onerror = function () { idbFailed = true; reject(req.error || new Error('No se pudo abrir IndexedDB')); };
       req.onblocked = function () { idbFailed = true; reject(new Error('IndexedDB bloqueada')); };
     });
+    /* Una apertura fallida no queda cacheada: la próxima escritura reintenta. */
+    dbPromise.catch(function () { dbPromise = null; });
     return dbPromise;
   }
   function idbRequest(db, store, mode, run) {
@@ -261,6 +266,7 @@
     const hs = Array.isArray(state.quizHistory) ? state.quizHistory : [];
     const sq = JSON.stringify(qs), sh = JSON.stringify(hs);
     if (!force && sq === quizMirrorSig.questions && sh === quizMirrorSig.history) return Promise.resolve();
+    const previousSig = quizMirrorSig;
     quizMirrorSig = { questions: sq, history: sh };
     const attempt = quizWriteChain.then(function () {
       return idbOpen().then(function (db) {
@@ -280,10 +286,14 @@
     });
     quizWriteChain = attempt.catch(function () {});
     return attempt.then(function () {
-      clearStorageError();
+      return true;
     }, function (e) {
-      idbFailed = true;
+      /* La firma sólo avanza si la transacción terminó: así un reintento vuelve
+         a escribir el banco en lugar de darlo por guardado. */
+      quizMirrorSig = previousSig;
+      idbFailed = true; storageOk = false;
       emitStorageError(e, 'IndexedDB (banco/historial)');
+      throw e;
     });
   }
   function listQuizData() {
@@ -316,10 +326,11 @@
     });
     writeChain = attempt.catch(function () {});
     return attempt.then(function () {
-      clearStorageError(); storageOk = true;
+      return true;
     }, function (e) {
       idbFailed = true; storageOk = false;
       emitStorageError(e, 'IndexedDB');
+      throw e;
     });
   }
   function initIDB() {
@@ -334,7 +345,12 @@
               const parsed = JSON.parse(raw);
               const data = (parsed && parsed.app === 'studyflow' && parsed.data) ? parsed.data : parsed;
               memoryState = data;
-              return writeIDB(data).then(function () { pruneLocalState(); });
+              /* El espejo localStorage se poda sólo cuando IndexedDB confirmó
+                 la escritura; si falla, el respaldo original sigue disponible. */
+              return writeIDB(data).then(function () {
+                clearStorageError(); storageOk = true;
+                pruneLocalState();
+              });
             }
           } catch (e) {}
           pruneLocalState();
@@ -358,6 +374,48 @@
   function getFile(id) { return idbGet(STORE_FILES, String(id)); }
   function listFiles() { return idbGetAll(STORE_FILES); }
   function deleteFile(id) { return idbDelete(STORE_FILES, String(id)); }
+
+  /* Borrado total: vacía los cuatro stores de IndexedDB y las claves propias
+     de localStorage. Se encola tras las escrituras pendientes para que ningún
+     guardado en curso reaparezca después del borrado. */
+  function clearAllStorage() {
+    const keys = Array.from(new Set(MIRROR_KEYS.concat(LIGHT_KEYS, HEAVY_KEYS)));
+    try {
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const k = localStorage.key(i);
+        if (k && (k.indexOf('studyflow-') === 0 || k === LEGACY_KEY)) keys.push(k);
+      }
+    } catch (e) {}
+    const attempt = Promise.all([writeChain, quizWriteChain]).then(function () {
+      return idbOpen();
+    }).then(function (db) {
+      return new Promise(function (resolve, reject) {
+        const tx = db.transaction([STORE_STATE, STORE_FILES, STORE_QUESTIONS, STORE_QUIZZES], 'readwrite');
+        tx.objectStore(STORE_STATE).clear();
+        tx.objectStore(STORE_FILES).clear();
+        tx.objectStore(STORE_QUESTIONS).clear();
+        tx.objectStore(STORE_QUIZZES).clear();
+        tx.oncomplete = function () { resolve(true); };
+        tx.onerror = function () { reject(tx.error || new Error('Error al borrar IndexedDB')); };
+        tx.onabort = function () { reject(tx.error || new Error('Transacción abortada')); };
+      });
+    });
+    writeChain = attempt.catch(function () {});
+    quizWriteChain = attempt.catch(function () {});
+    return attempt.then(function () {
+      keys.forEach(function (k) { try { localStorage.removeItem(k); } catch (e) {} });
+      memoryState = null;
+      quizMirrorSig = { questions: null, history: null };
+      lastSavePromise = Promise.resolve();
+      clearStorageError(); storageOk = true;
+      return true;
+    }, function (e) {
+      idbFailed = true; storageOk = false;
+      emitStorageError(e, 'IndexedDB (borrado)');
+      throw e;
+    });
+  }
+
   const DAYS = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
   const DAYS_LONG = ['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo'];
   const MONTHS = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
@@ -378,6 +436,16 @@
   const pad = (n) => String(n).padStart(2, '0');
   const ymd = (d) => d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
   const parseYmd = (s) => { const p = String(s || '').split('-').map(Number); return new Date(p[0], (p[1] || 1) - 1, p[2] || 1); };
+  /* Acepta sólo YYYY-MM-DD que existan de verdad: rechaza 2026-99-99,
+     2026-02-30 y cualquier fecha que el calendario corrija al construirla. */
+  const isRealYmd = (str) => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(str == null ? '' : str));
+    if (!m) return false;
+    const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
+    if (mo < 1 || mo > 12 || d < 1 || d > 31) return false;
+    const dt = new Date(y, mo - 1, d);
+    return dt.getFullYear() === y && dt.getMonth() === mo - 1 && dt.getDate() === d;
+  };
   const todayKey = () => ymd(new Date());
   const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
   const dayIdx = (d) => (d.getDay() + 6) % 7;
@@ -675,7 +743,7 @@
       id: String(e.id || uid()), sid: subIds.has(e.sid) ? e.sid : null,
       title: String(e.title || T('default.exam')).slice(0, 80),
       kind: ['Parcial', 'Examen', 'Entrega', 'Otro'].includes(e.kind) ? e.kind : 'Examen',
-      date: String(e.date || todayKey()), time: String(e.time || '')
+      date: isRealYmd(e.date) ? String(e.date) : todayKey(), time: String(e.time || '')
     }, e));
     s.grades = s.grades.filter(Boolean).map(g => withDemo({
       id: String(g.id || uid()), sid: subIds.has(g.sid) ? g.sid : null,
@@ -684,7 +752,7 @@
       weight: clamp(Number(g.weight) || 0, 0, 100)
     }, g)).filter(g => g.sid);
     // Normalize flashcards: cada tarjeta guarda su propia historia de repasos.
-    const validDue = (v, fallback) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : fallback;
+    const validDue = (v, fallback) => isRealYmd(v) ? String(v) : fallback;
     s.flashcards = s.flashcards.filter(Boolean).map(c => {
       const due = validDue(c.due, todayKey());
       const interval = clamp(Math.round(Number(c.interval) || 0), 0, 365);
@@ -720,7 +788,7 @@
     // Clean log
     const cleanLog = {};
     Object.keys(s.log).forEach(k => {
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(k) || typeof s.log[k] !== 'object') return;
+      if (!isRealYmd(k) || typeof s.log[k] !== 'object') return;
       const row = {};
       Object.keys(s.log[k]).forEach(sid => { if (subIds.has(sid) && Number(s.log[k][sid]) > 0) row[sid] = Number(s.log[k][sid]); });
       if (Object.keys(row).length) cleanLog[k] = row;
@@ -750,14 +818,28 @@
     } catch (e) { return null; }
   }
 
-  function save(state) {
+  function save(state, opts) {
     state.schemaVersion = SCHEMA_VERSION;
     memoryState = state;
     /* Escritura principal directa en IndexedDB; localStorage no participa. */
-    writeIDB(state);
-    mirrorQuizData(state);
+    const writes = Promise.all([writeIDB(state), mirrorQuizData(state)]);
+    const settled = writes.then(function () {
+      /* Sólo se cierra un error previo cuando AMBAS escrituras confirmaron. */
+      clearStorageError(); storageOk = true;
+      return true;
+    }, function (e) {
+      idbFailed = true; storageOk = false;
+      if (!lastStorageError) emitStorageError(e, 'IndexedDB (guardado)');
+      throw e;
+    });
+    lastSavePromise = settled;
+    /* Las llamadas históricas ignoran el resultado: consume el rechazo para no
+       generar unhandled rejection sin cambiar la API síncrona. */
+    settled.catch(function () {});
+    if (opts && opts.wait) return settled;
     return persistStatus();
   }
+  function savePromise() { return lastSavePromise; }
 
   /* Seis tarjetas traducibles vinculadas a las materias de ejemplo. Se usan
      al crear el demo y al reparar un estado demo que llegó sin flashcards. */
@@ -1308,12 +1390,28 @@
     if (data.log !== undefined && (typeof data.log !== 'object' || Array.isArray(data.log))) {
       return { ok: false, msgText: 'El respaldo está dañado: el registro de horas no es válido.' };
     }
+    /* Las fechas imposibles (p. ej. 2026-02-30) se rechazan antes de
+       reemplazar el estado actual; migrate() las normalizaría en silencio.
+       Un campo ausente o vacío cuenta como "sin fecha" y migrate lo completa. */
+    const badDate = (v) => v !== undefined && v !== null && v !== '' && !isRealYmd(v);
+    const impossibleDate =
+      (Array.isArray(data.exams) && data.exams.some(function (e) { return e && badDate(e.date); })) ||
+      (Array.isArray(data.flashcards) && data.flashcards.some(function (c) {
+        return c && (badDate(c.due) || (Array.isArray(c.history) && c.history.some(function (h) {
+          return h && badDate(h.due);
+        })));
+      })) ||
+      (data.log && Object.keys(data.log).some(function (k) { return !isRealYmd(k); }));
+    if (impossibleDate) return { ok: false, msgText: 'El respaldo contiene fechas imposibles.' };
     return { ok: true, data: data, version: sv };
   }
 
   function csvEscape(v) {
     const s = String(v == null ? '' : v);
-    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    /* Neutraliza fórmulas en Excel/Sheets sin tocar el dato en memoria ni en
+       IndexedDB: el apóstrofe sólo viaja en el archivo exportado. */
+    const safe = typeof v === 'string' && /^[=+\-@\t\r]/.test(s) ? "'" + s : s;
+    return /[",\n\r]/.test(safe) ? '"' + safe.replace(/"/g, '""') + '"' : safe;
   }
 
   function exportCSV(state) {
@@ -1373,10 +1471,10 @@
     get DAYS_LONG() { return dayNames('days.long', DAYS_LONG); },
     get MONTHS() { return dayNames('months.short', MONTHS); },
     get MONTHS_LONG() { return dayNames('months.long', MONTHS_LONG); },
-    $, $$, esc, uid, pad, ymd, parseYmd, todayKey, addDays, dayIdx, clamp, fnum, num,
+    $, $$, esc, uid, pad, ymd, parseYmd, isRealYmd, todayKey, addDays, dayIdx, clamp, fnum, num,
     toMin, normTime, fmtDur, fmtMin, blockMin, fmtClock,
     storageOk: () => storageOk, setStorageOk: (v) => { storageOk = v; },
-    defaults, defaultSettings, normalizeScale, migrate, load, save, sampleState, localizeSample,
+    defaults, defaultSettings, normalizeScale, migrate, load, save, savePromise, sampleState, localizeSample,
     demoData, sub, unitsBy, unitStats, syncProgress,
     cardsBy, dueCards, newCard, scheduleCard, cardStats,
     addLog, daySec, totalSec, weekDates, secBy, streak,
@@ -1388,6 +1486,8 @@
     /* Etapa 1: almacenamiento durable y sin limite de 5 MB */
     DB_NAME, SCHEMA_VERSION, whenReady,
     isIndexedDBReady: () => idbReady && !idbFailed,
+    /* Escritura confirmada (save(estado, { wait: true })) y borrado total. */
+    clearAllStorage,
     /* Fallo real de persistencia: callback y evento `onStorageError`. */
     STORAGE_ERROR_MESSAGE,
     get onStorageError() { return storageErrorHandler; },
